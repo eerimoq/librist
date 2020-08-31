@@ -5,14 +5,18 @@ if host_machine.system() == 'windows'
 	tools_deps += ['../contrib/getopt-shim.c']
 endif
 
+libyaml = cc.find_library('libyaml')
+
 executable('ristsender',
-	['ristsender.c', tools_deps],
+	['ristsender.c', 'yamlparse.c', tools_deps],
+	dependencies: [libyaml],
 	link_with : [librist],
 	include_directories: inc,
 	install: true)
 
 executable('ristreceiver',
-	['ristreceiver.c', tools_deps],
+	['ristreceiver.c','yamlparse.c', tools_deps],
+	dependencies: [libyaml],
 	link_with : [librist],
 	include_directories: inc,
 	install: true)

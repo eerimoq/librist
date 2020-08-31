@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <signal.h>
 #include "risturlhelp.h"
+#include "yamlparse.h"
 
 #if defined(_WIN32) || defined(_WIN64)
 # define strtok_r strtok_s
@@ -201,11 +202,13 @@ int main(int argc, char *argv[])
 	char *outputurl = NULL;
 	char *oobtun = NULL;
 	char *shared_secret = NULL;
+	char *yamlfile = NULL;
 	int buffer = 0;
 	int encryption_type = 0;
 	struct rist_callback_object callback_object;
 	enum rist_log_level loglevel = RIST_LOG_INFO;
 	int statsinterval = 1000;
+	rist_tools_config_object * yaml_config = malloc(sizeof(rist_tools_config_object));
 
 	for (size_t i = 0; i < MAX_OUTPUT_COUNT; i++)
 	{
@@ -232,8 +235,23 @@ int main(int argc, char *argv[])
 	rist_log(logging_settings, RIST_LOG_INFO, "Starting ristreceiver version: %d.%d.%d.%s\n", LIBRIST_API_VERSION_MAJOR,
 			LIBRIST_API_VERSION_MINOR, LIBRIST_API_VERSION_PATCH, RISTRECEIVER_VERSION);
 
-	while ((c = (char)getopt_long(argc, argv, "i:o:b:s:e:t:p:S:v:h:u", long_options, &option_index)) != -1) {
+	while ((c = (char)getopt_long(argc, argv, "f:i:o:b:s:e:t:p:S:v:h:u", long_options, &option_index)) != -1) {
 		switch (c) {
+		case 'f':
+			yamlfile = strdup(optarg);
+			if (!parse_yaml(yamlfile,yaml_config)){
+				fprintf(stderr,"Could not import yaml file %s\n",yamlfile);
+				exit(1);
+			}
+			inputurl = yaml_config->input_url;
+			outputurl = yaml_config->output_url;
+			buffer = yaml_config->buffer;
+			shared_secret = yaml_config->secret;
+			encryption_type = yaml_config->encryption_type;
+			oobtun = yaml_config->tunnel_interface;
+			profile = yaml_config->profile;
+			statsinterval = yaml_config->stats_interval;
+		break;
 		case 'i':
 			inputurl = strdup(optarg);
 		break;
@@ -457,6 +475,7 @@ next:
 	if (shared_secret)
 		free(shared_secret);
 	free(logging_settings);
+	free(yaml_config);
 
 	return 0;
 }
