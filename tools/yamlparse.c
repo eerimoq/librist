@@ -3,6 +3,7 @@
 #include <yaml.h>
 #include <yamlparse.h>
 
+// Append to an exisitng string
 void strapp(char ** original, char * newstr){
 	if (*original){
 		char * appended = malloc((strlen(newstr)+strlen(*original)+1)*sizeof(char));
@@ -14,7 +15,6 @@ void strapp(char ** original, char * newstr){
 		*original = strdup(newstr);
 	}
 }
-
 
 // Function to parse yaml config into a rist_tools_config_object
 bool parse_yaml(char * file, rist_tools_config_object * config){

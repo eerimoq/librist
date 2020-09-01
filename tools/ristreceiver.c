@@ -30,6 +30,7 @@ static struct rist_logging_settings *logging_settings;
 enum rist_profile profile = RIST_PROFILE_MAIN;
 
 static struct option long_options[] = {
+{ "file",      required_argument, NULL, 'f' },
 { "inputurl",        required_argument, NULL, 'i' },
 { "outputurl",       required_argument, NULL, 'o' },
 { "buffer",          required_argument, NULL, 'b' },
@@ -45,6 +46,7 @@ static struct option long_options[] = {
 };
 
 const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
+"       -f | --file name.yaml                   * | YAML config file                                         |\n"
 "       -i | --inputurl  rist://...             * | Comma separated list of input rist URLs                  |\n"
 "       -o | --outputurl udp://... or rtp://... * | Comma separated list of output udp or rtp URLs           |\n"
 "       -b | --buffer value                       | Default buffer size for packet retransmissions           |\n"

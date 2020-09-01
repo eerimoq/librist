@@ -41,6 +41,7 @@ struct rist_callback_object {
 };
 
 static struct option long_options[] = {
+{ "file",      required_argument, NULL, 'f' },
 { "inputurl",        required_argument, NULL, 'i' },
 { "outputurl",       required_argument, NULL, 'o' },
 { "buffer",          required_argument, NULL, 'b' },
@@ -56,6 +57,7 @@ static struct option long_options[] = {
 };
 
 const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
+"       -f | --file name.yaml                   * | YAML config file                                         |\n"
 "       -i | --inputurl  udp://... or rtp://... * | Comma separated list of input udp or rtp URLs            |\n"
 "       -o | --outputurl rist://...             * | Comma separated list of output rist URLs                 |\n"
 "       -b | --buffer value                       | Default buffer size for packet retransmissions           |\n"
@@ -471,6 +473,7 @@ next:
 	if (shared_secret)
 		free(shared_secret);
 	free(logging_settings);
+	free(yaml_config);
 
 	return 0;
 }
