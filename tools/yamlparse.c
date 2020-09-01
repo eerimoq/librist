@@ -3,17 +3,15 @@
 #include <yaml.h>
 #include <yamlparse.h>
 
-void strapp(char * original, char * newstr){
-	printf("%s\n",newstr);
-	if (original){
-		char * appended = malloc(sizeof(newstr) + sizeof(original));
-		strcpy(appended,original);
+void strapp(char ** original, char * newstr){
+	if (*original){
+		char * appended = malloc((strlen(newstr)+strlen(*original)+1)*sizeof(char));
+		strcpy(appended,*original);
 		strcat(appended,newstr);
-		free(original);
-		original = appended;
+		free(*original);
+		*original = appended;
 	} else {
-		original = malloc(sizeof(newstr));
-		strcpy(original,newstr);
+		*original = strdup(newstr);
 	}
 }
 
@@ -27,10 +25,6 @@ bool parse_yaml(char * file, rist_tools_config_object * config){
 	char * current_key = NULL;		// Placeholder string to hold any yaml keys
 
 	// Initialize rist_tools_config_object
-	/*strcpy(config->input_url,"");
-	strcpy(config->output_url,"");
-	strcpy(config->tunnel_interface,"");
-	strcpy(config->secret,"");*/
 	config->input_url = NULL;
 	config->output_url = NULL;
 	config->tunnel_interface = NULL;
@@ -63,12 +57,14 @@ bool parse_yaml(char * file, rist_tools_config_object * config){
 
 				// Process the url array elements if our tracker bools are set
 				if (on_input_url) {
-					strapp(config->input_url,(char *) event->data.scalar.value);
-					strapp(config->input_url,",");
+					strapp(&config->input_url,(char *) event->data.scalar.value);
+					strapp(&config->input_url,",");
+					printf("Input Pre: %s\n",config->input_url);
 				}
 				else if (on_output_url){
-					strapp(config->output_url,(char *) event->data.scalar.value);
-					strapp(config->output_url,",");
+					strapp(&config->output_url,(char *) event->data.scalar.value);
+					strapp(&config->output_url,",");
+					printf("Output Pre: %s\n",config->output_url);
 				}
 
 				// Process any keys/values, tracking the keys as we go along
@@ -78,14 +74,14 @@ bool parse_yaml(char * file, rist_tools_config_object * config){
 					else if (strcmp(current_key,"stats_interval") == 0) config->stats_interval=atoi((char *) event->data.scalar.value);
 					else if (strcmp(current_key,"profile") == 0) {
 						if (strcmp((char *) event->data.scalar.value,"main") == 0) config->profile=1;
-						if (strcmp((char *) event->data.scalar.value,"advanced") == 0) config->profile=2;
+						else if (strcmp((char *) event->data.scalar.value,"advanced") == 0) config->profile=2;
 						else config->profile=0;
 					}
-					else if (strcmp(current_key,"tunnel_interface") == 0) strapp(config->tunnel_interface,(char *) event->data.scalar.value);
-					else if (strcmp(current_key,"secret") == 0) strapp(config->secret,(char *) event->data.scalar.value);
+					else if (strcmp(current_key,"tunnel_interface") == 0) strapp(&config->tunnel_interface,(char *) event->data.scalar.value);
+					else if (strcmp(current_key,"secret") == 0) strapp(&config->secret,(char *) event->data.scalar.value);
 					on_value = false;
 				} else {
-					strapp(current_key,(char *) event->data.scalar.value);
+					current_key = strdup((char *) event->data.scalar.value);
 					on_value = true;
 				}
 				break;
@@ -93,8 +89,8 @@ bool parse_yaml(char * file, rist_tools_config_object * config){
 			// If we are on a url array, set our tracker bools
 			case YAML_SEQUENCE_START_EVENT:
 				if (on_value){
-					if (strcmp(current_key,"input_url")) on_input_url = true;
-					else if (strcmp(current_key,"output_url")) on_output_url = true;
+					if (strcmp(current_key,"input_url") == 0) on_input_url = true;
+					else if (strcmp(current_key,"output_url") == 0) on_output_url = true;
 					on_value = false;
 				}
 				break;

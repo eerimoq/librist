@@ -10,5 +10,5 @@ typedef struct rist_tools_config_object {
         char * output_url;
 } rist_tools_config_object;
 
-void strapp(char * original, char * newstr);
+void strapp(char ** original, char * newstr);
 bool parse_yaml(char * file, rist_tools_config_object * config);
