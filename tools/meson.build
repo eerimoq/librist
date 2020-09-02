@@ -14,7 +14,6 @@ if not libyaml.found()
 		builtin_libyaml = true
 	endif
 endif
-builtin_libyaml = true
 if builtin_libyaml
 	cmake = import('cmake')
 	toolchainfile = ''
