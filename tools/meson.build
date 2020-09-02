@@ -9,11 +9,12 @@ builtin_libyaml = get_option('builtin_libyaml')
 
 libyaml = dependency('libyaml',required: false)
 if not libyaml.found()
-	libyaml = cc.find_library('libyaml')
+	libyaml = cc.find_library('libyaml', required: false)
 	if not libyaml.found()
 		builtin_libyaml = true
 	endif
 endif
+builtin_libyaml = true
 if builtin_libyaml
 	cmake = import('cmake')
 	toolchainfile = ''
