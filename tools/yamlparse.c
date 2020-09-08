@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <stdbool.h>
-#include <yaml.h>
 #include <yamlparse.h>
+#ifdef LIBYAML
+#include <yaml.h>
+#endif
 
 // Append to an exisitng string
 void strapp(char ** original, char * newstr){
@@ -18,7 +20,7 @@ void strapp(char ** original, char * newstr){
 
 // Function to parse yaml config into a rist_tools_config_object
 bool parse_yaml(char * file, rist_tools_config_object * config){
-
+#ifdef LIBYAML
 	bool on_value = false;		// Tracker bool if we've already found a key and are now coming up on a value
 	bool on_input_url = false;	// Tracker bool if we're parsing the array for the input_url array
 	bool on_output_url = false;	// Tracker bool if we're parsing the array for the output_url array
@@ -123,6 +125,6 @@ bool parse_yaml(char * file, rist_tools_config_object * config){
 	free(parser);
 	free(event);
 	fclose(f);
-	
+#endif	
 	return true;
 }

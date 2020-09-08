@@ -66,6 +66,7 @@ endif
 test_args = []
 threads = []
 if host_machine.system() == 'linux'
+    add_project_arguments(['-DLIBYAML'], language: 'c')
     test_args += '-D_GNU_SOURCE'
 	add_project_arguments(['-D_GNU_SOURCE'], language: 'c')
 	threads = [ dependency('threads') ]
