@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdbool.h>
 #include <yamlparse.h>
 #ifdef LIBYAML
@@ -20,7 +22,6 @@ void strapp(char ** original, char * newstr){
 
 // Function to parse yaml config into a rist_tools_config_object
 bool parse_yaml(char * file, rist_tools_config_object * config){
-#ifdef LIBYAML
 	bool on_value = false;		// Tracker bool if we've already found a key and are now coming up on a value
 	bool on_input_url = false;	// Tracker bool if we're parsing the array for the input_url array
 	bool on_output_url = false;	// Tracker bool if we're parsing the array for the output_url array
@@ -36,14 +37,16 @@ bool parse_yaml(char * file, rist_tools_config_object * config){
 	config->profile = 0;
 	config->stats_interval = 1000;
 
+	// Open yaml file
+	FILE *f = fopen(file,"r");
+	if (f == NULL) return false;
+	
+#ifdef LIBYAML
 	// Initialize yaml parser
 	yaml_parser_t * parser = malloc(sizeof(yaml_parser_t));
 	yaml_event_t * event = malloc(sizeof(yaml_event_t));
 	yaml_parser_initialize(parser);
 
-	// Open yaml file
-	FILE *f = fopen(file,"r");
-	if (f == NULL) return false;
 	yaml_parser_set_input_file(parser,f);
 
 
