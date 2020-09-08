@@ -8,6 +8,7 @@ endif
 use_libyaml = get_option('use_libyaml')
 builtin_libyaml = get_option('builtin_libyaml')
 
+package_dependencies = []
 if use_libyaml
 	if not builtin_libyaml
 		libyaml = dependency('libyaml',required: false)
@@ -26,21 +27,22 @@ if use_libyaml
 				toolchainfile = '-DCMAKE_TOOLCHAIN_FILE='+meson.current_source_dir() + '/common/ci/x86_64-w64-mingw32.cmake'
 			endif
 		endif
-		libyaml_proj = cmake.subproject('libyaml', cmake_options: ['-DCMAKE_CXX_FLAGS="-Werror"','-DENABLE_TESTING=OFF', '-DENABLE_PROGRAMS=OFF', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', toolchainfile], default_options: ['werror=false'])
+		libyaml_proj = cmake.subproject('libyaml', cmake_options: ['-DENABLE_TESTING=OFF', '-DENABLE_PROGRAMS=OFF', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', toolchainfile], default_options: ['werror=false'])
 		libyaml = libyaml_proj.dependency('yaml')
 	endif
+	package_dependencies += [libyaml]
 endif 
 
 executable('ristsender',
 	['ristsender.c', 'yamlparse.c', tools_deps],
-	dependencies: [libyaml],
+	dependencies: package_dependencies,
 	link_with : [librist],
 	include_directories: inc,
 	install: true)
 
 executable('ristreceiver',
 	['ristreceiver.c','yamlparse.c', tools_deps],
-	dependencies: [libyaml],
+	dependencies: package_dependencies,
 	link_with : [librist],
 	include_directories: inc,
 	install: true)
