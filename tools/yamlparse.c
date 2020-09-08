@@ -22,10 +22,6 @@ void strapp(char ** original, char * newstr){
 
 // Function to parse yaml config into a rist_tools_config_object
 bool parse_yaml(char * file, rist_tools_config_object * config){
-	bool on_value = false;		// Tracker bool if we've already found a key and are now coming up on a value
-	bool on_input_url = false;	// Tracker bool if we're parsing the array for the input_url array
-	bool on_output_url = false;	// Tracker bool if we're parsing the array for the output_url array
-	char * current_key = NULL;		// Placeholder string to hold any yaml keys
 
 	// Initialize rist_tools_config_object
 	config->input_url = NULL;
@@ -51,6 +47,10 @@ bool parse_yaml(char * file, rist_tools_config_object * config){
 
 
 	// Iterate over yaml document
+	bool on_value = false;		// Tracker bool if we've already found a key and are now coming up on a value
+	bool on_input_url = false;	// Tracker bool if we're parsing the array for the input_url array
+	bool on_output_url = false;	// Tracker bool if we're parsing the array for the output_url array
+	char * current_key = NULL;		// Placeholder string to hold any yaml keys
 	do {
 		if (!yaml_parser_parse(parser,event)) {
 			fprintf(stderr,"Parser error %d\n", parser->error);
