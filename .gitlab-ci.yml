@@ -46,6 +46,7 @@ build-macos:
         - meson build --buildtype release
                       --werror
                       -Ddefault_library=both
+                      -Duse_libyaml=false
         - ninja -C build
 
 analyze-ubuntu:

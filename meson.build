@@ -44,10 +44,9 @@ if host_machine.system() == 'windows'
 	builtin_cjson = true
 	builtin_lz4 = true
 else
-	add_project_arguments(['-Wshadow', '-pedantic-errors'], language: 'c')
+	add_project_arguments(['-Wshadow', '-pedantic-errors','-Werror'], language: 'c')
 	add_project_arguments(cc.get_supported_arguments([
 		'-Wundef',
-		'-Werror=vla',
 		'-Wno-maybe-uninitialized',
 		'-Wno-missing-field-initializers',
 		'-Wno-unused-parameter',
