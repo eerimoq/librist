@@ -4,7 +4,7 @@ stages:
   - test
 
 .ubuntu-amd64-bionic:
-    image: registry.videolan.org/librist-ubuntu-bionic:20200501213126
+    image: registry.videolan.org/libplacebo-ubuntu-jammy:20230730213642
     stage: build
     tags:
         - docker
@@ -26,10 +26,6 @@ build-ubuntu:
     script:
         - meson build --buildtype release --werror -Duse_tun=true
         - ninja -C build
-    artifacts:
-        paths:
-          - build
-        expire_in: 24 hours
 
 build-win64:
     extends: .debian-amd64-common
@@ -64,6 +60,7 @@ test-ubuntu:
         - .ubuntu-amd64-bionic
     needs: ["build-ubuntu"]
     script:
+        - CC="clang" meson build --buildtype release --werror -Db_sanitize=address,undefined
         - cd build && meson test --print-errorlogs
     dependencies:
         - build-ubuntu
