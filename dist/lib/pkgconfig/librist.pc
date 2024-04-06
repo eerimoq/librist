@@ -1,9 +1,0 @@
-prefix=/home/edgehew/Repos/C++Projects/librist/dist
-libdir=${prefix}/lib
-includedir=${prefix}/include
-
-Name: librist
-Description: Reliable Internet Stream Transport (RIST)
-Version: 0.2.10
-Libs: -L${libdir} -lrist -pthread
-Cflags: -I${includedir} -pthread -DCJSON_HIDE_SYMBOLS
