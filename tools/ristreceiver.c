@@ -800,10 +800,10 @@ int main(int argc, char *argv[])
 		}
 
 #ifdef USE_TUN
-        if (strcmp(udp_config->prefix, "tun") == 0) {
-            atleast_one_socket_opened = true;
-            goto next;
-        }
+		if (strcmp(udp_config->prefix, "tun") == 0) {
+			atleast_one_socket_opened = true;
+			goto next;
+		}
 #endif
 
 		// Now parse the address 127.0.0.1:5000
