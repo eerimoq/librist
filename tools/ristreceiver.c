@@ -802,7 +802,7 @@ int main(int argc, char *argv[])
 #ifdef USE_TUN
 		if (strcmp(udp_config->prefix, "tun") == 0) {
 			if (!callback_object.tun) {
-				rist_log(%logging_settings, RIST_LOG_ERROR, "Detected 'tun://' usage in output url but '--tun' argument was not given\n");
+				rist_log(&logging_settings, RIST_LOG_ERROR, "Detected 'tun://' usage in output url but '--tun' argument was not given\n");
 				exit(1);
 			}
 			atleast_one_socket_opened = true;
