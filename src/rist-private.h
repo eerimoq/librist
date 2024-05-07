@@ -29,7 +29,7 @@
 #include "crypto/psk.h"
 #include <errno.h>
 #include <stdatomic.h>
-#include "librist/logging.h"
+#include "librist/librist_logging.h"
 
 #undef RIST_DEPRECATED
 

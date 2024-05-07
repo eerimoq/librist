@@ -14,7 +14,7 @@
 #include "sender.h"
 #include "peer.h"
 #include "stats.h"
-#include "logging.h"
+#include "librist_logging.h"
 #include "librist_srp.h"
 #include "opt.h"
 #include "oob.h"
