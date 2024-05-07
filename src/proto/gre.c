@@ -5,7 +5,7 @@
 #include "config.h"
 #include "crypto/psk.h"
 #include "log-private.h"
-#include "logging.h"
+#include "librist_logging.h"
 #include "rist-private.h"
 #include "endian-shim.h"
 #include "udp-private.h"
