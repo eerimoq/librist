@@ -10,7 +10,7 @@
 #include "time-shim.h"
 #include "stdio-shim.h"
 #include "udpsocket.h"
-#include "librist/logging.h"
+#include "librist/librist_logging.h"
 #include "pthread-shim.h"
 #include "config.h"
 #include <assert.h>

@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include "logging.h"
+#include "librist_logging.h"
 #include "proto/gre.h"
 #include "proto/protocol_gre.h"
 #include "udp-private.h"

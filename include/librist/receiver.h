@@ -10,7 +10,7 @@
 #define LIBRIST_RECEIVER_H
 
 #include "common.h"
-#include "logging.h"
+#include "librist_logging.h"
 #include "headers.h"
 
 #ifdef __cplusplus

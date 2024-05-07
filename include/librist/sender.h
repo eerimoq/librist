@@ -2,7 +2,7 @@
 #define LIBRIST_SENDER_H
 
 #include "common.h"
-#include "logging.h"
+#include "librist_logging.h"
 #include "headers.h"
 
 #include <stdint.h>
