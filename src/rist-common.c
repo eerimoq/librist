@@ -3529,6 +3529,8 @@ int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct
 			check->peer_rtcp = NULL;
 		check = check->next;
 	}
+    if (peer->sender_ctx)
+        peer->sender_ctx->total_weight -= peer->config.weight;
 	if (peer->parent) {
 		peer_remove_child(peer);
 		if (peer->parent->child == NULL) {
