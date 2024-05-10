@@ -101,8 +101,8 @@ void rist_sender_peer_statistics(struct rist_peer *peer)
 
 	if (cctx->stats_callback != NULL)
 		cctx->stats_callback(cctx->stats_callback_argument, stats_container);
-	else
-		rist_stats_free(stats_container);
+
+    rist_stats_free(stats_container);
 
 	memset(&peer->stats_sender_instant, 0, sizeof(peer->stats_sender_instant));
 	pthread_mutex_unlock(&(get_cctx(peer)->stats_lock));
