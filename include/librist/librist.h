@@ -19,6 +19,8 @@
 #include "opt.h"
 #include "oob.h"
 #include "headers.h"
+#include "version.h"
+#include "udpsocket.h"
 
 #ifdef __cplusplus
 extern "C" {
