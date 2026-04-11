@@ -823,6 +823,11 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	ctx->sender_retry_queue_read_index = sender_retry_queue_read_index;
 	struct rist_retry *retry = &ctx->sender_retry_queue[ctx->sender_retry_queue_read_index];
 
+	// If the peer was removed while this retry was queued, skip it
+	if (RIST_UNLIKELY(retry->peer == NULL)) {
+		return -1;
+	}
+
 	// If they request a non-sense seq number, we will catch it when we check the seq number against
 	// the one on that buffer position and it does not match
 
@@ -915,6 +920,10 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	}
 
 	uint16_t src_port = buffer->src_port;
+	if (retry->peer->peer_data == NULL) {
+		retry->peer->stats_sender_instant.retrans_skip++;
+		return -1;
+	}
 	if (src_port == 0)
 		src_port = 32768 + retry->peer->peer_data->adv_peer_id;
 	ret = (size_t)rist_send_seq_rtcp(retry->peer->peer_data, buffer->seq_rtp, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (retry->peer->peer_data->config.virt_dst_port & ~1UL), true);
