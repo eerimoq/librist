@@ -3552,6 +3552,15 @@ int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct
 	}
     if (peer->sender_ctx)
         peer->sender_ctx->total_weight -= peer->config.weight;
+	/* Invalidate any retry queue entries referencing this peer */
+	if (peer->sender_ctx) {
+		struct rist_sender *sender = peer->sender_ctx;
+		for (size_t i = 0; i < sender->sender_retry_queue_size; i++) {
+			if (sender->sender_retry_queue[i].peer == peer) {
+				sender->sender_retry_queue[i].peer = NULL;
+			}
+		}
+	}
 	if (peer->parent) {
 		peer_remove_child(peer);
 		if (peer->parent->child == NULL) {
