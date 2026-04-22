@@ -3665,6 +3665,8 @@ int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct
 			check->peer_rtcp = NULL;
 		check = check->next;
 	}
+	if (peer->sender_ctx)
+		peer->sender_ctx->total_weight -= peer->config.weight;
 
 	/* Defensive: scrub any references to this peer from the sender's
 	 * retry queue. The protocol thread now drains that queue under
