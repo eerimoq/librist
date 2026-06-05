@@ -47,6 +47,24 @@ test_reflector = executable('test_reflector',
 ###Sender restart test (bug fix verification)
 test('Sender restart test', test_sender_restart, args: ['5'], suite: ['regression', 'sender'])
 
+###?profile= URL override tests (rist_*_create profile != URL profile)
+test('?profile=2 URL overrides Main to Advanced',
+     test_send_receive,
+     args: ['1', 'rist://@127.0.0.1:7080?profile=2', 'rist://127.0.0.1:7080?profile=2', '0'],
+     suite: ['url-profile', 'advanced', 'unicast', 'server'])
+test('?profile=2 URL overrides Main to Advanced + 10% loss',
+     test_send_receive,
+     args: ['1', 'rist://@127.0.0.1:7082?profile=2&rtt-max=10&rtt-min=1', 'rist://127.0.0.1:7082?profile=2&rtt-max=10&rtt-min=1', '10'],
+     suite: ['url-profile', 'advanced', 'unicast', 'server'])
+test('?profile=1 URL overrides Advanced to Main',
+     test_send_receive,
+     args: ['2', 'rist://@127.0.0.1:7084?profile=1', 'rist://127.0.0.1:7084?profile=1', '0'],
+     suite: ['url-profile', 'main', 'unicast', 'server'])
+test('?profile=2 URL overrides Simple to Advanced',
+     test_send_receive,
+     args: ['0', 'rist://@127.0.0.1:7086?profile=2', 'rist://127.0.0.1:7086?profile=2', '0'],
+     suite: ['url-profile', 'advanced', 'unicast', 'server'])
+
 ###Reflector tests
 test('Reflector functionality', test_reflector, suite: ['main', 'reflector'])
 

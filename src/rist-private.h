@@ -335,6 +335,10 @@ struct rist_common_ctx {
 	uint64_t stats_report_time;
 
 	enum rist_profile profile;
+	/* Set by rist_*_start() and by rist_peer_create() once a peer with
+	 * a definite profile has been inserted.  When set, rist_peer_create
+	 * refuses any peer whose ?profile= disagrees with cctx->profile. */
+	atomic_bool profile_locked;
 	uint8_t cname[RIST_MAX_HOSTNAME];
 
 	/* seq variables */
@@ -742,6 +746,7 @@ RIST_PRIV struct rist_peer *rist_sender_peer_insert_local(struct rist_sender *ct
 RIST_PRIV void rist_fsm_init_comm(struct rist_peer *peer);
 RIST_PRIV int rist_oob_enqueue(struct rist_common_ctx *ctx, struct rist_peer *peer, const void *buf, size_t len);
 RIST_PRIV int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile);
+RIST_PRIV void init_advanced_state(struct rist_common_ctx *ctx);
 RIST_PRIV int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct rist_peer **next);
 RIST_PRIV int rist_auth_handler(struct rist_common_ctx *ctx,
 								int (*conn_cb)(void *arg, const char *connecting_ip, uint16_t connecting_port, const char *local_ip, uint16_t local_port, struct rist_peer *peer),

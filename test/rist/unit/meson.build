@@ -42,3 +42,17 @@ test_adv_roundtrip = executable('test_adv_roundtrip',
                                 include_directories : inc,
                                 dependencies : adv_test_deps)
 test('adv_roundtrip', test_adv_roundtrip, suite:['unit'])
+
+# URL ?profile= parsing exercised through the public rist_parse_address2 API.
+test_url_profile_parse = executable('test_url_profile_parse',
+                                    'test_url_profile_parse.c',
+                                    include_directories : inc,
+                                    link_with : librist)
+test('url_profile_parse', test_url_profile_parse, suite:['unit'])
+
+# ?profile= URL override semantics inside rist_peer_create.
+test_url_profile_override = executable('test_url_profile_override',
+                                       'test_url_profile_override.c',
+                                       include_directories : inc,
+                                       link_with : librist)
+test('url_profile_override', test_url_profile_override, suite:['unit'])
