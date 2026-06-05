@@ -658,6 +658,9 @@ struct rist_peer {
 	int dead;
 	int timed_out;
 	uint64_t dead_since;
+	/* Caller-side socket rebind bookkeeping. */
+	uint64_t last_rebind_time;
+	uint32_t rebind_attempts;
 	uint64_t birthtime_peer;
 	uint64_t birthtime_local;
 

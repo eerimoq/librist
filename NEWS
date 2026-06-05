@@ -57,6 +57,17 @@ Bug Fixes:
     slots, tripping an assert in debug builds or misordering the queue
     otherwise.  Interpolation is now bounds-checked, rounded without
     overshoot, wrap/reorder-aware, and clamped to the neighbour interval.
+  - NAT source-port rebind recovery (issue #188): when a calling
+    receiver's external source port changes (NAT mapping rebind, DHCP
+    renewal), the listening sender no longer treats it as a brand-new
+    caller that leaves the old peer record orphaned until session
+    timeout.  For encrypted callers (PSK/SRP), once the new child
+    authenticates and learns its cname from an RTCP SDES, its source
+    tuple is migrated into the matching existing sibling.  For
+    plaintext callers, a caller-mode receiver on a MAIN+ profile with
+    no encryption and no pinned local port rebinds its UDP socket to a
+    fresh ephemeral port on session timeout and restarts the handshake
+    instead of giving up.
   - ?profile=0|1|2 in a peer URL (0=Simple, 1=Main, 2=Advanced) now
     overrides the wire profile of the context that owns the peer.
     rist_parse_address2 parses the value into rist_peer_config; on the
