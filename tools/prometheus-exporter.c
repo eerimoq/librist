@@ -389,7 +389,9 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 			s->container_count++;
 		}
 	} else {
-		s->container_offset = 1;
+		/* Single-stat-point mode: format reads container[0] only
+		 * (container_count stays at 1), so the next write must land there. */
+		s->container_offset = 0;
 		s->container_count = 1;
 	}
 
@@ -446,7 +448,9 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 				ps->container_count++;
 			}
 		} else {
-			ps->container_offset = 1;
+			/* Single-stat-point mode: format reads container[0] only
+			 * (container_count stays at 1), so the next write must land there. */
+			ps->container_offset = 0;
 			ps->container_count = 1;
 		}
 	}
@@ -536,7 +540,9 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 			s->container_count++;
 		}
 	} else {
-		s->container_offset = 1;
+		/* Single-stat-point mode: format reads container[0] only
+		 * (container_count stays at 1), so the next write must land there. */
+		s->container_offset = 0;
 		s->container_count = 1;
 	}
 }
