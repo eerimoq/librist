@@ -743,17 +743,23 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	size += rist_prometheus_format_sender_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
 	size += rist_prometheus_format_receiver_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
 	size += snprintf(&ctx->format_buf[size], ctx->format_buf_len - size, "%s", PROMETHEUS_EOF);
-	for (size_t i=0; i < ctx->client_cnt; i++) {
-		ctx->clients[i]->container_count = 0;
-		ctx->clients[i]->container_offset = 0;
-	}
-	for (size_t i=0; i < ctx->sender_peer_cnt; i++) {
-		ctx->sender_peers[i]->container_count = 0;
-		ctx->sender_peers[i]->container_offset = 0;
-	}
-	for (size_t i=0; i < ctx->receiver_peer_cnt; i++) {
-		ctx->receiver_peers[i]->container_count = 0;
-		ctx->receiver_peers[i]->container_offset = 0;
+	/* Multi-point mode accumulates samples between scrapes and resets
+	 * after each one.  Single-stat-point mode keeps the latest sample
+	 * live until the next stats callback overwrites it
+	 * (cleanup_stale_locked still ages it out after 15 s). */
+	if (!ctx->single_stat_point) {
+		for (size_t i=0; i < ctx->client_cnt; i++) {
+			ctx->clients[i]->container_count = 0;
+			ctx->clients[i]->container_offset = 0;
+		}
+		for (size_t i=0; i < ctx->sender_peer_cnt; i++) {
+			ctx->sender_peers[i]->container_count = 0;
+			ctx->sender_peers[i]->container_offset = 0;
+		}
+		for (size_t i=0; i < ctx->receiver_peer_cnt; i++) {
+			ctx->receiver_peers[i]->container_count = 0;
+			ctx->receiver_peers[i]->container_offset = 0;
+		}
 	}
 	return size;
 }
@@ -836,10 +842,35 @@ void rist_prometheus_sender_add_peer(struct rist_prometheus_stats *ctx, uint64_t
 }
 
 #if HAVE_SOCK_UN_H
+/* Loops on partial writes, retries EINTR, and uses MSG_NOSIGNAL when
+ * available so a closed peer cannot SIGPIPE the exporter.  Returns the
+ * number of bytes actually delivered. */
+static ssize_t prometheus_write_all(int fd, const void *buf, size_t len) {
+	const char *p = (const char *)buf;
+	size_t remaining = len;
+	while (remaining > 0) {
+#ifdef MSG_NOSIGNAL
+		ssize_t n = send(fd, p, remaining, MSG_NOSIGNAL);
+#else
+		ssize_t n = write(fd, p, remaining);
+#endif
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			return (ssize_t)(len - remaining);
+		}
+		if (n == 0)
+			break;
+		remaining -= (size_t)n;
+		p += n;
+	}
+	return (ssize_t)(len - remaining);
+}
+
 void *rist_prometheus_stats_unix_socket_thread(void *arg) {
 	struct rist_prometheus_stats * ctx = (struct rist_prometheus_stats *)arg;
 	fprintf(stderr, "Starting unix socket thread\n");
-	int ret = listen(ctx->fd, 1);
+	int ret = listen(ctx->fd, SOMAXCONN);
 	if (ret != 0) {
 		fprintf(stderr, "Error %s listening on unix socket\n", strerror(errno));
 		return NULL;
@@ -847,13 +878,32 @@ void *rist_prometheus_stats_unix_socket_thread(void *arg) {
 	while (true) {
 		int fd = accept(ctx->fd, NULL, NULL);
 		if (fd < 0) {
+			if (errno == EINTR)
+				continue;
 			break;
 		}
 		pthread_mutex_lock(&ctx->lock);
 		int size = rist_prometheus_stats_format(ctx);
-		(void)! write(fd, ctx->format_buf, size);
+		ssize_t wrote = (size > 0)
+			? prometheus_write_all(fd, ctx->format_buf, (size_t)size)
+			: 0;
 		pthread_mutex_unlock(&ctx->lock);
-		shutdown(fd, SHUT_RDWR);
+		(void)wrote; /* best-effort; client may have hung up */
+		/* Linux close() of an AF_UNIX SOCK_STREAM with unread RX is
+		 * abortive (RST, drops the TX queue we just wrote into).
+		 * Drain RX (bounded by SO_RCVTIMEO) so close() does a clean
+		 * FIN-FIN handshake. */
+		shutdown(fd, SHUT_WR);
+		{
+			struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
+			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+			char drain[512];
+			while (1) {
+				ssize_t r = recv(fd, drain, sizeof(drain), 0);
+				if (r <= 0)
+					break;
+			}
+		}
 #ifndef _WIN32
 		close(fd);
 #else
