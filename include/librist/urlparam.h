@@ -28,7 +28,7 @@
 #define RIST_URL_PARAM_KEEPALIVE_INT "keepalive-interval"
 #define RIST_URL_PARAM_SRP_USERNAME "username"
 #define RIST_URL_PARAM_SRP_PASSWORD "password"
-#define RIST_URL_PARAM_SRP_COMPAT "srp-compat"  //"legacy" or "1" => pre-0.2.16 SRP wire format
+#define RIST_URL_PARAM_SRP_COMPAT "srp-compat"  //0|1 (1 => pre-0.2.16 SRP wire format)
 /* Less common URL parameters */
 #define RIST_URL_PARAM_BUFFER_SIZE_MIN "buffer-min"
 #define RIST_URL_PARAM_BUFFER_SIZE_MAX "buffer-max"

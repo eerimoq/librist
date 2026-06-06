@@ -55,7 +55,7 @@ SRP interoperability:
     the PAD) will not handshake with 0.2.16+.  Upgrading both ends
     to 0.2.16+ remains the recommended fix.
   - New URL parameter for transitional interop:
-        ?srp-compat=legacy
+        ?srp-compat=1
     On both ends of the SRP exchange, this opts the SRP wire format
     back into the pre-0.2.16 unpadded form.  Must be set on BOTH
     sides; mixed configuration will still fail.  An explicit WARN
@@ -63,7 +63,7 @@ SRP interoperability:
     as an escape hatch while older deployments are upgraded.
   - When an SRP handshake fails, the authenticator (and the client
     on M2 mismatch) now emits a single INFO hint pointing at the
-    srp-compat=legacy escape hatch.  The hint is advisory only —
+    srp-compat=1 escape hatch.  The hint is advisory only —
     the SRP-6a transcript binds M1 to the authenticator's wire-mode
     B, so there is no purely-local way to distinguish "wrong
     password" from "peer is on the other wire format" once the

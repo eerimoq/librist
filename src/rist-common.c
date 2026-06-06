@@ -192,8 +192,14 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_PASSWORD) == 0) {
 				strncpy((void *)output_peer_config->srp_password, val, 256 -1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_COMPAT) == 0) {
-				output_peer_config->srp_compat_legacy =
-					(strcmp(val, "legacy") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+				char *endp = NULL;
+				long temp = strtol(val, &endp, 10);
+				if (endp == val || *endp != '\0' || (temp != 0 && temp != 1)) {
+					ret = -1;
+					fprintf(stderr, "Invalid srp-compat '%s'; expected 0|1\n", val);
+					continue;
+				}
+				output_peer_config->srp_compat_legacy = (int)temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_CNAME ) == 0) {
 				strncpy((void *)output_peer_config->cname, val, 128-1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_AES_TYPE ) == 0) {

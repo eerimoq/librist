@@ -56,3 +56,10 @@ test_url_profile_override = executable('test_url_profile_override',
                                        include_directories : inc,
                                        link_with : librist)
 test('url_profile_override', test_url_profile_override, suite:['unit'])
+
+# ?srp-compat= URL parsing exercised through the public rist_parse_address2 API.
+test_url_srp_compat_parse = executable('test_url_srp_compat_parse',
+                                       'test_url_srp_compat_parse.c',
+                                       include_directories : inc,
+                                       link_with : librist)
+test('url_srp_compat_parse', test_url_srp_compat_parse, suite:['unit'])

@@ -432,7 +432,7 @@ struct librist_crypto_srp_authenticator_ctx {
 	uint8_t m2[SHA256_DIGEST_LENGTH];
 
 	bool correct_hashing_init;
-	bool legacy_pad;             //pre-0.2.16 unpadded u/k (srp-compat=legacy)
+	bool legacy_pad;             //pre-0.2.16 unpadded u/k (srp-compat=1)
 };
 
 struct librist_crypto_srp_authenticator_ctx *librist_crypto_srp_authenticator_ctx_create(const char* n_hex, const char *g_hex, const uint8_t *v_bytes, size_t v_len, const uint8_t *s_bytes, size_t s_len, bool correct, bool legacy_pad) {
@@ -739,7 +739,7 @@ struct librist_crypto_srp_client_ctx {
 	uint8_t m1[SHA256_DIGEST_LENGTH];
 
 	bool correct_hashing_init;
-	bool legacy_pad;             //pre-0.2.16 unpadded u/k (srp-compat=legacy)
+	bool legacy_pad;             //pre-0.2.16 unpadded u/k (srp-compat=1)
 };
 
 int librist_crypto_srp_client_write_A_bytes(struct librist_crypto_srp_client_ctx *ctx, uint8_t *A_buf, size_t A_buf_len) {
