@@ -77,7 +77,7 @@ enum librist_merge_mode
 	LIBRIST_MERGE_MODE_AUTO  = 2,
 };
 
-#define RIST_PEER_CONFIG_VERSION (3)
+#define RIST_PEER_CONFIG_VERSION (4)
 
 struct rist_peer_config
 {
@@ -168,6 +168,12 @@ struct rist_peer_config
 	uint16_t local_port;
 
 	int srp_compat_legacy;    /* 0 = RFC 5054 PAD (default), 1 = pre-0.2.16 unpadded */
+
+	/* Wire profile parsed from ?profile=.  Test profile_set first:
+	 * profile == RIST_PROFILE_SIMPLE on a zero-initialised config is
+	 * indistinguishable from "value not provided". */
+	enum rist_profile profile;
+	int profile_set;
 };
 
 /**
@@ -204,6 +210,11 @@ RIST_API int rist_peer_config_free2(struct rist_peer_config **peer_config);
  * @brief Add a peer to the RIST session
  *
  * One sender can send data to multiple peers.
+ *
+ * If config->profile_set is non-zero (version >= 4), the call may
+ * change the context wire profile to config->profile when invoked
+ * before rist_start() and before any other peer has fixed it.  Once
+ * fixed, any later call whose ?profile= disagrees returns -1.
  *
  * @param ctx RIST context
  * @param[out] peer Store the new peer pointer

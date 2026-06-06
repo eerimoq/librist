@@ -13,8 +13,24 @@ ABI/API:
   - RIST_PEER_CONFIG_VERSION bumped from 2 to 3 (one new field:
     srp_compat_legacy).  Existing zero-initialised peer configs
     continue to work; the new field defaults to 0 (spec-compliant).
+  - RIST_PEER_CONFIG_VERSION bumped from 3 to 4 (two new fields:
+    profile + profile_set, populated by the ?profile= URL parameter).
+    rist_peer_config_defaults_set() initialises both to safe defaults
+    (profile = RIST_DEFAULT_PROFILE, profile_set = 0).  Existing
+    zero-initialised configs keep their pre-bump behaviour.
 
 Bug Fixes:
+  - ?profile=0|1|2 in a peer URL (0=Simple, 1=Main, 2=Advanced) now
+    overrides the wire profile of the context that owns the peer.
+    rist_parse_address2 parses the value into rist_peer_config; on the
+    first matching peer added before rist_start(), rist_peer_create
+    mutates the context profile and lazily initialises the Advanced
+    profile state when upgrading to Advanced.  Subsequent peers must
+    request the same profile (or omit the parameter); rist_peer_create
+    returns -1 with a WARN once the context profile is locked (after
+    rist_start() or a prior peer fixed it).  Any consumer that passes
+    URLs through rist_parse_address2 + rist_peer_create now gets the
+    URL-driven profile selection with no further integration work.
   - Windows XP support restored: rist_transport_poll() now uses
     select() via the existing contrib/poll_win.c shim instead of
     WSAPoll() (Vista+ only).  Regression introduced in 0.2.17.
@@ -39,7 +55,7 @@ SRP interoperability:
     the PAD) will not handshake with 0.2.16+.  Upgrading both ends
     to 0.2.16+ remains the recommended fix.
   - New URL parameter for transitional interop:
-        ?srp-compat=legacy
+        ?srp-compat=1
     On both ends of the SRP exchange, this opts the SRP wire format
     back into the pre-0.2.16 unpadded form.  Must be set on BOTH
     sides; mixed configuration will still fail.  An explicit WARN
@@ -47,7 +63,7 @@ SRP interoperability:
     as an escape hatch while older deployments are upgraded.
   - When an SRP handshake fails, the authenticator (and the client
     on M2 mismatch) now emits a single INFO hint pointing at the
-    srp-compat=legacy escape hatch.  The hint is advisory only —
+    srp-compat=1 escape hatch.  The hint is advisory only —
     the SRP-6a transcript binds M1 to the authenticator's wire-mode
     B, so there is no purely-local way to distinguish "wrong
     password" from "peer is on the other wire format" once the

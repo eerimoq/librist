@@ -997,6 +997,8 @@ int rist_peer_config_defaults_set(struct rist_peer_config *peer_config)
 		peer_config->max_retries = RIST_DEFAULT_MAX_RETRIES;
 		peer_config->split_mode = LIBRIST_SPLIT_MODE_OFF;
 		peer_config->merge_mode = LIBRIST_MERGE_MODE_OFF;
+		peer_config->profile = RIST_DEFAULT_PROFILE;
+		peer_config->profile_set = 0;
 		return 0;
 	}
 	else
@@ -1173,6 +1175,34 @@ static int rist_sender_peer_create(struct rist_sender *ctx,
 	return 0;
 }
 
+/* If config carries a ?profile= request (version >= 4 && profile_set),
+ * either apply it to the context (if unlocked and different) or refuse
+ * the peer (if locked and different).  Caller must hold peerlist_lock.
+ * Returns 0 on success/no-op, -1 on conflict (caller must abort). */
+static int apply_url_profile_override(struct rist_common_ctx *cctx,
+                                      const struct rist_peer_config *config)
+{
+	if (config->version < 4 || !config->profile_set)
+		return 0;
+	if (config->profile == cctx->profile)
+		return 0;
+	if (atomic_load_explicit(&cctx->profile_locked, memory_order_acquire)) {
+		rist_log_priv(cctx, RIST_LOG_WARN,
+			"?profile=%d in URL refused: context profile is locked to %d "
+			"(rist_start has run or a prior peer fixed the profile).\n",
+			(int)config->profile, (int)cctx->profile);
+		return -1;
+	}
+	enum rist_profile old = cctx->profile;
+	cctx->profile = config->profile;
+	if (config->profile == RIST_PROFILE_ADVANCED && old != RIST_PROFILE_ADVANCED)
+		init_advanced_state(cctx);
+	rist_log_priv(cctx, RIST_LOG_INFO,
+		"Context profile changed from %d to %d by ?profile= URL parameter\n",
+		(int)old, (int)config->profile);
+	return 0;
+}
+
 int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct rist_peer_config *config) {
 	if (!ctx) {
 		rist_log_priv3(RIST_LOG_ERROR, "rist_peer_create call with null ctx\n");
@@ -1183,15 +1213,25 @@ int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct
 	if (ctx->mode == RIST_RECEIVER_MODE && ctx->receiver_ctx) {
 		cctx = &ctx->receiver_ctx->common;
 		pthread_mutex_lock(&cctx->peerlist_lock);
+		if (apply_url_profile_override(cctx, config) < 0) {
+			pthread_mutex_unlock(&cctx->peerlist_lock);
+			return -1;
+		}
 		ret = rist_receiver_peer_create(ctx->receiver_ctx, peer, config);
 	}
 	else if (ctx->mode == RIST_SENDER_MODE && ctx->sender_ctx) {
 		cctx = &ctx->sender_ctx->common;
 		pthread_mutex_lock(&cctx->peerlist_lock);
+		if (apply_url_profile_override(cctx, config) < 0) {
+			pthread_mutex_unlock(&cctx->peerlist_lock);
+			return -1;
+		}
 		ret  =rist_sender_peer_create(ctx->sender_ctx, peer, config);
 	}
 	else
 		return -1;
+	if (ret == 0)
+		atomic_store_explicit(&cctx->profile_locked, true, memory_order_release);
 	pthread_mutex_unlock(&cctx->peerlist_lock);
 	return ret;
 }
@@ -1318,6 +1358,7 @@ static PTHREAD_START_FUNC(sender_data_fd_read_loop, arg)
 
 static int rist_sender_start(struct rist_sender *ctx)
 {
+	atomic_store_explicit(&ctx->common.profile_locked, true, memory_order_release);
 	pthread_mutex_lock(&ctx->mutex);
 	if (!ctx->protocol_running) {
 		if (rist_thread_create(&ctx->common, &ctx->sender_thread, NULL, sender_pthread_protocol, (void *)ctx) != 0)
@@ -1354,6 +1395,7 @@ unlock_failed:
 
 static int rist_receiver_start(struct rist_receiver *ctx)
 {
+	atomic_store_explicit(&ctx->common.profile_locked, true, memory_order_release);
 	pthread_mutex_lock(&ctx->mutex);
 	if (!ctx->protocol_running)
 	{

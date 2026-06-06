@@ -192,8 +192,14 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_PASSWORD) == 0) {
 				strncpy((void *)output_peer_config->srp_password, val, 256 -1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_COMPAT) == 0) {
-				output_peer_config->srp_compat_legacy =
-					(strcmp(val, "legacy") == 0 || strcmp(val, "1") == 0) ? 1 : 0;
+				char *endp = NULL;
+				long temp = strtol(val, &endp, 10);
+				if (endp == val || *endp != '\0' || (temp != 0 && temp != 1)) {
+					ret = -1;
+					fprintf(stderr, "Invalid srp-compat '%s'; expected 0|1\n", val);
+					continue;
+				}
+				output_peer_config->srp_compat_legacy = (int)temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_CNAME ) == 0) {
 				strncpy((void *)output_peer_config->cname, val, 128-1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_AES_TYPE ) == 0) {
@@ -299,6 +305,21 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp > 0 && temp <= 65535)
 					output_peer_config->local_port = (uint16_t)temp;
+			} else if (output_peer_config->version >= 4 &&
+			           strcmp( url_params[i].key, RIST_URL_PARAM_PROFILE ) == 0) {
+				/* version >= 4: writing profile fields on a
+				 * struct sized for an older version would
+				 * overflow the caller's allocation. */
+				char *endp = NULL;
+				long temp = strtol(val, &endp, 10);
+				if (endp == val || *endp != '\0' ||
+				    temp < RIST_PROFILE_SIMPLE || temp > RIST_PROFILE_ADVANCED) {
+					ret = -1;
+					fprintf(stderr, "Invalid profile '%s'; expected 0|1|2\n", val);
+					continue;
+				}
+				output_peer_config->profile = (enum rist_profile)temp;
+				output_peer_config->profile_set = 1;
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);
@@ -4069,6 +4090,20 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 	return 0;
 }
 
+/* Idempotent: re-init is fine if cctx->profile is upgraded to Advanced
+ * after the original init_common_ctx ran (e.g. via ?profile= URL override
+ * in rist_peer_create).  Re-rolls SSRC base and clears the seq counters. */
+void init_advanced_state(struct rist_common_ctx *ctx)
+{
+	/* Generate a random even SSRC base for the Protected flow.
+	 * The Unprotected flow uses ssrc_base | 1 (Section 5.2.1). */
+	uint32_t rnd = 0;
+	_librist_crypto_ramdom_get_bytes((uint8_t *)&rnd, sizeof(rnd));
+	ctx->adv_ssrc_base = rnd & ~(uint32_t)1;
+	ctx->adv_seq_protected = 0;
+	ctx->adv_seq_unprotected = 0;
+}
+
 int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 {
 #ifdef _WIN32
@@ -4094,17 +4129,11 @@ int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 		rist_log_priv3( RIST_LOG_INFO, "Starting in Advanced Profile Mode\n");
 
 	ctx->profile = profile;
+	atomic_store_explicit(&ctx->profile_locked, false, memory_order_release);
 	ctx->stats_report_time = 0;
 
-	if (profile == RIST_PROFILE_ADVANCED) {
-		/* Generate a random even SSRC base for the Protected flow.
-		 * The Unprotected flow uses ssrc_base | 1 (Section 5.2.1). */
-		uint32_t rnd = 0;
-		_librist_crypto_ramdom_get_bytes((uint8_t *)&rnd, sizeof(rnd));
-		ctx->adv_ssrc_base = rnd & ~(uint32_t)1;
-		ctx->adv_seq_protected = 0;
-		ctx->adv_seq_unprotected = 0;
-	}
+	if (profile == RIST_PROFILE_ADVANCED)
+		init_advanced_state(ctx);
 
 	if (pthread_mutex_init(&ctx->peerlist_lock, NULL) != 0) {
 		rist_log_priv3( RIST_LOG_ERROR, "Failed to init ctx->peerlist_lock\n");
