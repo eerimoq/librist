@@ -43,6 +43,10 @@ Bug Fixes:
   - Prometheus exporter: counter rows in multiple_metric_datapoints
     mode now have a space between the value and the timestamp.
     Affected every existing _total row.
+  - Prometheus exporter: in single_stat_point mode, the displayed
+    value no longer freezes at the first callback and silently
+    drops every subsequent sample.  Affected all receiver-flow,
+    sender-peer, and per-peer-receiver gauges.
   - Receiver flow stats: bitrate, bitrate_retries, bitrate_rejected
     and bitrate_ts_nulls now decay to zero when the corresponding
     traffic stops, instead of remaining frozen at the last value
