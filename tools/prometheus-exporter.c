@@ -407,7 +407,33 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 			}
 		}
 		if (ps == NULL) {
-			int res = snprintf(NULL, 0, "{%speer_id=\"%"PRIu32"\",flow_id=\"%"PRIu32"\",receiver_id=\"%"PRIu64"\"}", ctx->tags, pstats->peer_id, stats->flow_id, receiver_id);
+			/* Receiver peers are auto-discovered from the stats callback
+			 * rather than explicitly registered; the URL is carried
+			 * alongside the peer in the receiver-flow stats JSON. */
+			char peer_url[256] = {0};
+			if (stats_container->stats_json) {
+				cJSON *url_root = cJSON_Parse(stats_container->stats_json);
+				if (url_root) {
+					cJSON *recv_stats = cJSON_GetObjectItem(url_root, "receiver-stats");
+					cJSON *flowinst = recv_stats ? cJSON_GetObjectItem(recv_stats, "flowinstant") : NULL;
+					cJSON *peers = flowinst ? cJSON_GetObjectItem(flowinst, "peers") : NULL;
+					if (cJSON_IsArray(peers)) {
+						for (cJSON *p = peers->child; p != NULL; p = p->next) {
+							cJSON *id_item = cJSON_GetObjectItem(p, "id");
+							if (cJSON_IsNumber(id_item) && (uint32_t)id_item->valueint == pstats->peer_id) {
+								cJSON *url_item = cJSON_GetObjectItem(p, "url");
+								if (cJSON_IsString(url_item) && url_item->valuestring) {
+									strncpy(peer_url, url_item->valuestring, sizeof(peer_url) - 1);
+								}
+								break;
+							}
+						}
+					}
+					cJSON_Delete(url_root);
+				}
+			}
+
+			int res = snprintf(NULL, 0, "{%speer_id=\"%"PRIu32"\",peer_url=\"%s\",flow_id=\"%"PRIu32"\",receiver_id=\"%"PRIu64"\"}", ctx->tags, pstats->peer_id, peer_url, stats->flow_id, receiver_id);
 			if (res < 0)
 				continue;
 			size_t len = (size_t)res + 1;
@@ -428,7 +454,7 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 			ps->receiver_id = receiver_id;
 			ps->created = now;
 			ps->tags = calloc(1, len);
-			res = snprintf(ps->tags, len, "{%speer_id=\"%"PRIu32"\",flow_id=\"%"PRIu32"\",receiver_id=\"%"PRIu64"\"}", ctx->tags, ps->peer_id, ps->flow_id, ps->receiver_id);
+			res = snprintf(ps->tags, len, "{%speer_id=\"%"PRIu32"\",peer_url=\"%s\",flow_id=\"%"PRIu32"\",receiver_id=\"%"PRIu64"\"}", ctx->tags, ps->peer_id, peer_url, ps->flow_id, ps->receiver_id);
 			assert(res >= 0);
 			ctx->receiver_peer_cnt++;
 		}
