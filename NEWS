@@ -93,7 +93,7 @@ Tools:
     simple/main/advanced profile, or ristsender used as a relay /
     fan-out in front of non-RIST consumers).
   - Prometheus exporter: new per-peer receiver metric block
-    rist_receiver_peer_* with labels {peer_id, flow_id,
+    rist_receiver_peer_* with labels {peer_id, peer_url, flow_id,
     receiver_id}, mirroring rist_sender_peer_*.  Auto-registered
     from rist_stats_receiver_flow.peers[].
   - Prometheus exporter: new client-flow gauge

@@ -218,6 +218,13 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 		cJSON *peer_obj = cJSON_CreateObject();
 		cJSON_AddNumberToObject(peer_obj, "id", peer->adv_peer_id);
 		cJSON_AddNumberToObject(peer_obj, "dead", peer->dead);
+		/* Listener-mode children have url=NULL; the configured URL
+		 * lives on the parent peer. */
+		const char *peer_url_str = peer->url;
+		if ((peer_url_str == NULL || peer_url_str[0] == '\0') && peer->parent && peer->parent->url) {
+			peer_url_str = peer->parent->url;
+		}
+		cJSON_AddStringToObject(peer_obj, "url", peer_url_str ? peer_url_str : "");
 		cJSON *peer_stats = cJSON_AddObjectToObject(peer_obj, "stats");
 		cJSON_AddNumberToObject(peer_stats, "received_data", (double)peer->stats_receiver_instant.received);
 		cJSON_AddNumberToObject(peer_stats, "received_bytes", (double)peer->stats_receiver_instant.received_bytes);
