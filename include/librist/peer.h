@@ -41,6 +41,12 @@ struct rist_peer;
 #define RIST_DEFAULT_SESSION_TIMEOUT (2000)
 #define RIST_DEFAULT_KEEPALIVE_INTERVAL (1000)
 #define RIST_DEFAULT_TIMING_MODE RIST_TIMING_MODE_SOURCE
+#define RIST_DEFAULT_RECOVERY_PRIORITY (0)
+
+/* Special value for rist_peer_config.weight: a peer configured with this
+ * weight receives a duplicate of every packet instead of taking part in
+ * the weighted load-balancing rotation. */
+#define RIST_PEER_WEIGHT_DUPLICATE (0)
 
 enum rist_timing_mode
 {
@@ -77,7 +83,7 @@ enum librist_merge_mode
 	LIBRIST_MERGE_MODE_AUTO  = 2,
 };
 
-#define RIST_PEER_CONFIG_VERSION (4)
+#define RIST_PEER_CONFIG_VERSION (5)
 
 struct rist_peer_config
 {
@@ -107,7 +113,7 @@ struct rist_peer_config
 	uint32_t recovery_rtt_min; /* ms */
 	uint32_t recovery_rtt_max; /* ms */
 
-	/* Load balancing weight (use 0 for duplication) */
+	/* Load balancing weight (use RIST_PEER_WEIGHT_DUPLICATE for duplication) */
 	uint32_t weight;
 
 	/* Encryption */
@@ -174,6 +180,17 @@ struct rist_peer_config
 	 * indistinguishable from "value not provided". */
 	enum rist_profile profile;
 	int profile_set;
+
+	/* Retransmission (NACK) routing preference for the receiver.
+	 * When a flow is carried by more than one RTCP-capable peer, the
+	 * receiver sends each NACK to the eligible peer with the highest
+	 * recovery_priority (ties broken by lowest measured RTT).  0
+	 * (default) preserves the legacy behaviour of selecting the
+	 * lowest-RTT eligible peer regardless of priority.  Set this >0 on
+	 * the peer that holds the retransmission buffer when a lower-RTT
+	 * peer carrying the same flow cannot answer NACKs (e.g. a
+	 * duplicate/relay feed with no retransmit cache). */
+	uint32_t recovery_priority;
 };
 
 /**

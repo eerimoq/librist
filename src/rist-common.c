@@ -32,6 +32,7 @@
 #include "rist_ref.h"
 #include "config.h"
 #include "rist-thread.h"
+#include "rist-nack-select.h"
 #include "peer.h"
 #include <stdbool.h>
 #include "stdio-shim.h"
@@ -249,6 +250,10 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp >= 0)
 					output_peer_config->weight = temp;
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_RECOVERY_PRIORITY ) == 0) {
+				int temp = atoi( val );
+				if (temp >= 0)
+					output_peer_config->recovery_priority = (uint32_t)temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SESSION_TIMEOUT ) == 0) {
 				int temp = atoi( val );
 				if (temp > 0)
@@ -409,7 +414,7 @@ static void init_peer_settings(struct rist_peer *peer)
 			}
 		}
 
-		if (!peer->listening && peer->config.weight > 0 && !peer->parent) {
+		if (!peer->listening && peer->config.weight != RIST_PEER_WEIGHT_DUPLICATE && !peer->parent) {
 			ctx->total_weight += peer->config.weight;
 			rist_log_priv(&ctx->common, RIST_LOG_INFO, "Peer weight: %lu\n", peer->config.weight);
 		}
@@ -1228,16 +1233,25 @@ static void send_nack_group(struct rist_receiver *ctx, struct rist_flow *f)
 	pthread_mutex_lock(&ctx->common.peerlist_lock);
 	pthread_mutex_lock(&f->mutex);
 	struct rist_peer *peer = NULL;
-	uint64_t last_rtt = UINT64_MAX;
+	uint64_t best_rtt = UINT64_MAX;
+	uint32_t best_priority = 0;
 	if (f->peer_lst_len == 0 || f->peer_lst == NULL)
 		goto out;
+	/* Route NACKs to the eligible peer with the highest recovery_priority,
+	 * tie-broken by lowest RTT.  With the default priority of 0 on every
+	 * peer this reduces to the historical lowest-RTT selection. */
 	for (size_t i = 0; i < f->peer_lst_len; i++)
 	{
 		struct rist_peer *check = f->peer_lst[i];
-		if (check->is_rtcp && !check->dead && check->last_rtt < last_rtt)
+		if (!check->is_rtcp || check->dead)
+			continue;
+		uint32_t priority = check->config.recovery_priority;
+		if (rist_nack_peer_preferred(priority, check->last_rtt,
+		                             best_priority, best_rtt))
 		{
 			peer = check;
-			last_rtt = peer->last_rtt;
+			best_priority = priority;
+			best_rtt = check->last_rtt;
 		}
 	}
 	if (peer != NULL)
@@ -2540,6 +2554,7 @@ static void peer_copy_settings(struct rist_peer *peer_src, struct rist_peer *pee
 	strncpy(&peer->miface[0], &peer_src->miface[0], RIST_MAX_STRING_SHORT);
 	peer->miface[RIST_MAX_STRING_SHORT - 1] = '\0';
 	peer->config.weight = peer_src->config.weight;
+	peer->config.recovery_priority = peer_src->config.recovery_priority;
 	peer->config.virt_dst_port = peer_src->config.virt_dst_port;
 	peer->config.recovery_mode = peer_src->config.recovery_mode;
 	peer->config.recovery_maxbitrate = peer_src->config.recovery_maxbitrate;
@@ -4441,6 +4456,7 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 	peer->config.min_retries = min_retries;
 	peer->config.max_retries = max_retries;
 	peer->config.weight = settings->weight;
+	peer->config.recovery_priority = settings->recovery_priority;
 	peer->config.timing_mode = settings->timing_mode;
 	peer->config.virt_dst_port = settings->virt_dst_port;
 	if (settings->version >= 2)
