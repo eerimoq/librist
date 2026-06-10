@@ -31,6 +31,14 @@ Bug Fixes:
     rist_start() or a prior peer fixed it).  Any consumer that passes
     URLs through rist_parse_address2 + rist_peer_create now gets the
     URL-driven profile selection with no further integration work.
+  - Fixed a use-after-free in the global logger when an application frees
+    its rist_logging_settings, either directly via
+    rist_logging_settings_free2() or by destroying a context that embeds
+    them (as FFmpeg does), while the global logger still references that
+    callback and argument.  The global logging settings are now cleared
+    when the matching settings are freed, so logs emitted afterwards (for
+    example from background threads on a rapid close/reopen) no longer
+    call into freed memory.
   - Windows XP support restored: rist_transport_poll() now uses
     select() via the existing contrib/poll_win.c shim instead of
     WSAPoll() (Vista+ only).  Regression introduced in 0.2.17.
