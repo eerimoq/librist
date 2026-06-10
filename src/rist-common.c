@@ -4561,6 +4561,8 @@ void rist_receiver_destroy_local(struct rist_receiver *ctx)
 	pthread_cond_destroy(&ctx->condition);
 	pthread_mutex_destroy(&ctx->mutex);
 
+	rist_logging_unset_global_if_matches(ctx->common.logging_settings);
+
 	free(ctx);
 	ctx = NULL;
 }
@@ -4820,6 +4822,9 @@ void rist_sender_destroy_local(struct rist_sender *ctx)
 		}
 		ctx->sender_queue_delete_index = (ctx->sender_queue_delete_index + 1)& (ctx->sender_queue_max -1);
 	}
+
+	rist_logging_unset_global_if_matches(ctx->common.logging_settings);
+
 	free(ctx);
 	ctx = NULL;
 }

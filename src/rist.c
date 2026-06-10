@@ -869,6 +869,7 @@ int rist_logging_settings_free(const struct rist_logging_settings **logging_sett
 int rist_logging_settings_free2(struct rist_logging_settings **logging_settings)
 {
 	if (*logging_settings) {
+		rist_logging_unset_global_if_matches(*logging_settings);
 		free((void *)*logging_settings);
 		*logging_settings = NULL;
 	}
