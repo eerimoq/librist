@@ -313,3 +313,38 @@ err:
 	}
 	return -1;
 }
+
+void rist_logging_unset_global_if_matches(const struct rist_logging_settings *logging_settings)
+{
+	if (!logging_settings)
+		return;
+	if (init_once_global() != 0)
+	{
+		return;
+	}
+	pthread_mutex_lock(&global_logging_settings.global_logs_lock);
+	if (global_logging_settings.logs_set &&
+		global_logging_settings.settings.log_cb == logging_settings->log_cb &&
+		global_logging_settings.settings.log_cb_arg == logging_settings->log_cb_arg &&
+		global_logging_settings.settings.log_stream == logging_settings->log_stream)
+	{
+		if (global_logging_settings.settings.log_socket >= 0 &&
+#ifndef _WIN32
+			global_logging_settings.settings.log_socket != STDIN_FILENO &&
+			global_logging_settings.settings.log_socket != STDOUT_FILENO &&
+			global_logging_settings.settings.log_socket != STDERR_FILENO)
+#else
+			global_logging_settings.settings.log_socket != _fileno( stdin ) &&
+			global_logging_settings.settings.log_socket != _fileno( stdout ) &&
+			global_logging_settings.settings.log_socket != _fileno( stderr ))
+#endif
+		{
+			udpsocket_close(global_logging_settings.settings.log_socket);
+		}
+		global_logging_settings.settings =
+			(struct rist_logging_settings)LOGGING_SETTINGS_INITIALIZER;
+		global_logging_settings.logs_set = false;
+	}
+	pthread_mutex_unlock(&global_logging_settings.global_logs_lock);
+}
+
