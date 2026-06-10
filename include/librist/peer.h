@@ -177,11 +177,29 @@ struct rist_peer_config
 };
 
 /**
+ * @brief Populate a preallocated peer_config structure with library default values (versioned)
+ *
+ * @return 0 on success or non-zero on error.
+ */
+RIST_API int rist_peer_config_defaults_set_versioned(struct rist_peer_config *peer_config, int version);
+
+/**
  * @brief Populate a preallocated peer_config structure with library default values
  *
  * @return 0 on success or non-zero on error.
  */
+#ifdef LIBRIST_INTERNAL
 RIST_API int rist_peer_config_defaults_set(struct rist_peer_config *peer_config);
+#else
+#if defined(__cplusplus) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)
+static inline int rist_peer_config_defaults_set(struct rist_peer_config *peer_config) {
+	return rist_peer_config_defaults_set_versioned(peer_config, RIST_PEER_CONFIG_VERSION);
+}
+#else
+#define rist_peer_config_defaults_set(peer_config) \
+	rist_peer_config_defaults_set_versioned((peer_config), RIST_PEER_CONFIG_VERSION)
+#endif
+#endif
 
 /**
  * @brief Parses rist url for peer config data (encryption, compression, etc)
