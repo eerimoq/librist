@@ -179,11 +179,11 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 					output_peer_config->recovery_length_max = temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_MIFACE ) == 0) {
 				strncpy((void *)output_peer_config->miface, val, 128-1);
-			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_TTL) == 0) {
+			} else if (output_peer_config->version >= 2 && strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_TTL) == 0) {
 				int temp = atoi(val);
 				if (temp > 0 && temp <= 255)
 					output_peer_config->multicast_ttl = (uint32_t)temp;
-			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_SOURCE) == 0) {
+			} else if (output_peer_config->version >= 2 && strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_SOURCE) == 0) {
 				strncpy((void *)output_peer_config->multicast_source, val, RIST_MAX_STRING_LONG - 1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SECRET ) == 0) {
 				strncpy((void *)output_peer_config->secret, val, 128-1);
@@ -191,7 +191,7 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				strncpy((void *)output_peer_config->srp_username, val, 256 -1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_PASSWORD) == 0) {
 				strncpy((void *)output_peer_config->srp_password, val, 256 -1);
-			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SRP_COMPAT) == 0) {
+			} else if (output_peer_config->version >= 3 && strcmp( url_params[i].key, RIST_URL_PARAM_SRP_COMPAT) == 0) {
 				char *endp = NULL;
 				long temp = strtol(val, &endp, 10);
 				if (endp == val || *endp != '\0' || (temp != 0 && temp != 1)) {
@@ -297,11 +297,11 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 					ret = -1;
 					fprintf(stderr, "Unknown merge mode '%s'; expected off|auto|pairs\n", val);
 				}
-			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_REFLECTOR ) == 0) {
+			} else if (output_peer_config->version >= 2 && strcmp( url_params[i].key, RIST_URL_PARAM_REFLECTOR ) == 0) {
 				int temp = atoi( val );
 				if (temp >= 0 && temp <= 1)
 					output_peer_config->reflector = temp;
-			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_LOCAL_PORT ) == 0) {
+			} else if (output_peer_config->version >= 2 && strcmp( url_params[i].key, RIST_URL_PARAM_LOCAL_PORT ) == 0) {
 				int temp = atoi( val );
 				if (temp > 0 && temp <= 65535)
 					output_peer_config->local_port = (uint16_t)temp;
@@ -4443,8 +4443,14 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 	peer->config.weight = settings->weight;
 	peer->config.timing_mode = settings->timing_mode;
 	peer->config.virt_dst_port = settings->virt_dst_port;
-	peer->config.reflector = settings->reflector;
-	peer->config.srp_compat_legacy = settings->srp_compat_legacy; //read by rist_enable_eap_srp_2 after peer_create
+	if (settings->version >= 2)
+		peer->config.reflector = settings->reflector;
+	else
+		peer->config.reflector = 0;
+	if (settings->version >= 3)
+		peer->config.srp_compat_legacy = settings->srp_compat_legacy; //read by rist_enable_eap_srp_2 after peer_create
+	else
+		peer->config.srp_compat_legacy = 0;
 
 	init_peer_settings(peer);
 }

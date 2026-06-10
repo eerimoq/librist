@@ -63,3 +63,10 @@ test_url_srp_compat_parse = executable('test_url_srp_compat_parse',
                                        include_directories : inc,
                                        link_with : librist)
 test('url_srp_compat_parse', test_url_srp_compat_parse, suite:['unit'])
+
+# Versioned peer-config defaults gate fields by RIST_PEER_CONFIG_VERSION.
+test_peer_config_versioned_defaults = executable('test_peer_config_versioned_defaults',
+                                                 'test_peer_config_versioned_defaults.c',
+                                                 include_directories : inc,
+                                                 link_with : librist)
+test('peer_config_versioned_defaults', test_peer_config_versioned_defaults, suite:['unit'])

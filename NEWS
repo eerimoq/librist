@@ -18,6 +18,17 @@ ABI/API:
     rist_peer_config_defaults_set() initialises both to safe defaults
     (profile = RIST_DEFAULT_PROFILE, profile_set = 0).  Existing
     zero-initialised configs keep their pre-bump behaviour.
+  - New rist_peer_config_defaults_set_versioned(cfg, version) initialises
+    only the fields defined at or below the given RIST_PEER_CONFIG_VERSION.
+    rist_peer_config_defaults_set() is now a static inline wrapper (peer.h)
+    that forwards the caller's compiled RIST_PEER_CONFIG_VERSION, so a
+    recompiled caller initialises exactly the fields its struct contains.
+    The exported rist_peer_config_defaults_set() symbol is retained for
+    binaries linked against an earlier library; it assumes version 0 and
+    sets only the baseline fields present in every struct revision.  Such
+    binaries must zero-initialise their config before the call: fields
+    added in version 1+ (split_mode, merge_mode, profile, profile_set)
+    are left untouched.
 
 Bug Fixes:
   - ?profile=0|1|2 in a peer URL (0=Simple, 1=Main, 2=Advanced) now
@@ -39,6 +50,12 @@ Bug Fixes:
     when the matching settings are freed, so logs emitted afterwards (for
     example from background threads on a rapid close/reopen) no longer
     call into freed memory.
+  - rist_peer_config_defaults_set() no longer writes past the end of a
+    peer config supplied by a binary compiled against an older
+    RIST_PEER_CONFIG_VERSION, and parse_url_options() / store_peer_settings()
+    no longer touch version-specific fields unless peer_config->version is
+    high enough: reflector, multicast_ttl, multicast_source and local_port
+    require version >= 2; srp_compat_legacy requires version >= 3.
   - Windows XP support restored: rist_transport_poll() now uses
     select() via the existing contrib/poll_win.c shim instead of
     WSAPoll() (Vista+ only).  Regression introduced in 0.2.17.

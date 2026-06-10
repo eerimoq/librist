@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#define LIBRIST_INTERNAL 1
 #include "rist-private.h"
 #include "log-private.h"
 #include "udp-private.h"
@@ -979,11 +980,11 @@ int rist_parse_udp_address2(const char *url, struct rist_udp_config **udp_config
 	return ret;
 }
 
-int rist_peer_config_defaults_set(struct rist_peer_config *peer_config)
+int rist_peer_config_defaults_set_versioned(struct rist_peer_config *peer_config, int version)
 {
 	if (peer_config)
 	{
-		peer_config->version = RIST_PEER_CONFIG_VERSION;
+		peer_config->version = version;
 		peer_config->virt_dst_port = RIST_DEFAULT_VIRT_DST_PORT;
 		peer_config->recovery_mode = RIST_DEFAULT_RECOVERY_MODE;
 		peer_config->recovery_maxbitrate = RIST_DEFAULT_RECOVERY_MAXBITRATE;
@@ -996,14 +997,29 @@ int rist_peer_config_defaults_set(struct rist_peer_config *peer_config)
 		peer_config->congestion_control_mode = RIST_DEFAULT_CONGESTION_CONTROL_MODE;
 		peer_config->min_retries = RIST_DEFAULT_MIN_RETRIES;
 		peer_config->max_retries = RIST_DEFAULT_MAX_RETRIES;
-		peer_config->split_mode = LIBRIST_SPLIT_MODE_OFF;
-		peer_config->merge_mode = LIBRIST_MERGE_MODE_OFF;
-		peer_config->profile = RIST_DEFAULT_PROFILE;
-		peer_config->profile_set = 0;
+		if (version >= 1)
+		{
+			peer_config->split_mode = LIBRIST_SPLIT_MODE_OFF;
+			peer_config->merge_mode = LIBRIST_MERGE_MODE_OFF;
+		}
+		if (version >= 4)
+		{
+			peer_config->profile = RIST_DEFAULT_PROFILE;
+			peer_config->profile_set = 0;
+		}
 		return 0;
 	}
 	else
 		return -1;
+}
+
+/* Legacy API wrapper symbol exported for ABI compatibility.
+ * Since pre-existing compiled binaries calling this function do not pass their
+ * struct size or compile-time version, we assume version 0 (baseline layout)
+ * to guarantee that we never write out-of-bounds on legacy client structures. */
+int rist_peer_config_defaults_set(struct rist_peer_config *peer_config)
+{
+	return rist_peer_config_defaults_set_versioned(peer_config, 0);
 }
 
 int rist_parse_address(const char *url, const struct rist_peer_config **peer_config)
@@ -1020,7 +1036,7 @@ int rist_parse_address2(const char *url, struct rist_peer_config **peer_config)
 	{
 		// Default options on new struct (rist url)
 		struct rist_peer_config *output_peer_config = calloc(1, sizeof(struct rist_peer_config));
-		rist_peer_config_defaults_set(output_peer_config);
+		rist_peer_config_defaults_set_versioned(output_peer_config, RIST_PEER_CONFIG_VERSION);
 		ret = parse_url_options(url_local, output_peer_config);
 		*peer_config = output_peer_config;
 	}
