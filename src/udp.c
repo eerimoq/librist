@@ -974,7 +974,7 @@ peer_select:
 		/* * * * * * * * * * * * * * * * * * */
 		/*************************************/
 
-		if (peer->config.weight == 0 && !looped) {
+		if (peer->config.weight == RIST_PEER_WEIGHT_DUPLICATE && !looped) {
 			if (peer->listening) {
 				struct rist_peer *child = peer->child;
 				while (child) {

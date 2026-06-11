@@ -29,6 +29,26 @@ ABI/API:
     binaries must zero-initialise their config before the call: fields
     added in version 1+ (split_mode, merge_mode, profile, profile_set)
     are left untouched.
+  - RIST_PEER_CONFIG_VERSION bumped from 4 to 5 (one new field:
+    recovery_priority, populated by the ?recovery-priority= URL
+    parameter).  rist_peer_config_defaults_set_versioned() initialises
+    it to 0 for callers compiled against version 5 or later; zero-
+    initialised configs and callers built against an earlier version
+    keep the legacy NACK-routing behaviour.
+  - New public macro RIST_PEER_WEIGHT_DUPLICATE (0) names the
+    rist_peer_config.weight sentinel that selects packet duplication
+    instead of weighted load-balancing.  Value unchanged.
+
+Features:
+  - Per-peer retransmission routing: the new ?recovery-priority=<n>
+    peer URL parameter (rist_peer_config.recovery_priority) lets a
+    receiver direct NACKs to a chosen peer when a flow is carried by
+    more than one RTCP-capable peer.  Each NACK group is sent to the
+    eligible peer with the highest recovery_priority, ties broken by
+    lowest RTT.  The default of 0 on every peer preserves the prior
+    lowest-RTT selection.  Useful when the lowest-RTT peer cannot
+    answer NACKs (e.g. a duplicate/relay feed with no retransmit
+    buffer) while a higher-RTT peer holds the retransmission buffer.
 
 Bug Fixes:
   - ?profile=0|1|2 in a peer URL (0=Simple, 1=Main, 2=Advanced) now

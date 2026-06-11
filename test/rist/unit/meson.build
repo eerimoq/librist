@@ -70,3 +70,16 @@ test_peer_config_versioned_defaults = executable('test_peer_config_versioned_def
                                                  include_directories : inc,
                                                  link_with : librist)
 test('peer_config_versioned_defaults', test_peer_config_versioned_defaults, suite:['unit'])
+
+# ?recovery-priority= URL parsing exercised through the public API.
+test_url_recovery_priority_parse = executable('test_url_recovery_priority_parse',
+                                              'test_url_recovery_priority_parse.c',
+                                              include_directories : inc,
+                                              link_with : librist)
+test('url_recovery_priority_parse', test_url_recovery_priority_parse, suite:['unit'])
+
+# NACK routing peer-selection predicate (header-only, no link needed).
+test_nack_peer_select = executable('test_nack_peer_select',
+                                   'test_nack_peer_select.c',
+                                   include_directories : inc)
+test('nack_peer_select', test_nack_peer_select, suite:['unit'])

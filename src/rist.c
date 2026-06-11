@@ -1007,6 +1007,10 @@ int rist_peer_config_defaults_set_versioned(struct rist_peer_config *peer_config
 			peer_config->profile = RIST_DEFAULT_PROFILE;
 			peer_config->profile_set = 0;
 		}
+		if (version >= 5)
+		{
+			peer_config->recovery_priority = RIST_DEFAULT_RECOVERY_PRIORITY;
+		}
 		return 0;
 	}
 	else
@@ -1146,7 +1150,7 @@ static int rist_sender_peer_create(struct rist_sender *ctx,
 	// TODO: Validate config data (virt_dst_port != 0 for example)
 
 	newpeer->is_data = true;
-	if (config->weight > 0)
+	if (config->weight != RIST_PEER_WEIGHT_DUPLICATE)
 		newpeer->w_count = config->weight;
 	peer_append(newpeer);
 
