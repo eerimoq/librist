@@ -51,6 +51,12 @@ Features:
     buffer) while a higher-RTT peer holds the retransmission buffer.
 
 Bug Fixes:
+  - Fixed a receiver abort when a retransmitted or gap-filled packet's
+    arrival time is interpolated.  With peers whose clocks are not
+    synchronised the estimate could fall outside its neighbouring queue
+    slots, tripping an assert in debug builds or misordering the queue
+    otherwise.  Interpolation is now bounds-checked, rounded without
+    overshoot, wrap/reorder-aware, and clamped to the neighbour interval.
   - ?profile=0|1|2 in a peer URL (0=Simple, 1=Main, 2=Advanced) now
     overrides the wire profile of the context that owns the peer.
     rist_parse_address2 parses the value into rist_peer_config; on the
