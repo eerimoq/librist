@@ -101,7 +101,9 @@ struct rist_peer * _librist_peer_match_peer_addr(struct rist_peer *p, uint16_t f
 			return p;
 		p = p->child;
 		while (p) {
-			if (_librist_peer_equal_address(family, addr, p))
+			/* Skip dead children so an absorbed peer cannot shadow
+			 * the live record that now owns the tuple. */
+			if (!p->dead && _librist_peer_equal_address(family, addr, p))
 				return p;
 			p = p->sibling_next;
 		}

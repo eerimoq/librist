@@ -43,9 +43,44 @@ test_reflector = executable('test_reflector',
                                 stdatomic_dependency
                             ])
 
+# issue #188 coverage: listener-side cname re-association.  Two
+# modes (plaintext / psk) exercise both branches of the encryption
+# gate.
+test_nat_port_rebind = executable('test_nat_port_rebind',
+                                  'test_nat_port_rebind.c',
+                                  extra_sources,
+                                  include_directories: inc,
+                                  link_with: librist,
+                                  dependencies: [
+                                      threads,
+                                      tools_dependencies,
+                                      stdatomic_dependency
+                                  ])
+
+# issue #188 coverage: receiver-caller socket rebind on session
+# silence (plaintext only).
+test_caller_socket_rebind = executable('test_caller_socket_rebind',
+                                       'test_caller_socket_rebind.c',
+                                       extra_sources,
+                                       include_directories: inc,
+                                       link_with: librist,
+                                       dependencies: [
+                                           threads,
+                                           tools_dependencies,
+                                           stdatomic_dependency
+                                       ])
+
 
 ###Sender restart test (bug fix verification)
 test('Sender restart test', test_sender_restart, args: ['5'], suite: ['regression', 'sender'])
+
+###issue #188 NAT source-port rebind recovery
+test('NAT port rebind cname re-association (plaintext gate)', test_nat_port_rebind,
+     suite: ['regression', 'nat'], timeout: 90)
+test('NAT port rebind cname re-association (psk migration)', test_nat_port_rebind,
+     args: ['psk'], suite: ['regression', 'nat'], timeout: 90)
+test('Receiver caller socket rebind on silence', test_caller_socket_rebind,
+     suite: ['regression', 'nat'], timeout: 90)
 
 ###?profile= URL override tests (rist_*_create profile != URL profile)
 test('?profile=2 URL overrides Main to Advanced',

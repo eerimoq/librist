@@ -2365,6 +2365,9 @@ static char *get_ip_str(struct sockaddr *sa, char *s, size_t maxlen)
 	return s;
 }
 
+static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64_t now);
+static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now);
+
 static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 		uint32_t flow_id, struct rist_buffer *payload)
 {
@@ -2478,6 +2481,14 @@ static void rist_recv_rtcp(struct rist_peer *peer, uint32_t seq,
 					}
 					else {
 						connection_message = RIST_CONNECTION_ESTABLISHED;
+						/* Re-associate by cname before announcing a
+						 * brand-new caller.  On success this kills the
+						 * new peer and returns, dropping any RTCP records
+						 * that followed the SDES in the same compound
+						 * packet. */
+						if (!peer->send_first_connection_event &&
+						    try_listener_reassociate_by_cname(peer, timestampNTP_u64()))
+							return;
 					}
 					if (peer->timed_out || !peer->send_first_connection_event || (!peer_authenticated && peer->authenticated)) {
 						if (!peer->send_first_connection_event)
@@ -2603,6 +2614,167 @@ static void kill_peer(struct rist_peer *peer)
 	if (peer->peer_data && (current_state != peer->peer_data->dead && peer->peer_data->parent))
 		--peer->peer_data->parent->child_alive_count;
 	peer->dead_since = timestampNTP_u64();
+}
+
+/* Listener-side cname re-association for a NAT source-port rebind.
+ * Gated on PSK/SRP being active because cname is forgeable in
+ * plaintext.  Returns true after killing new_peer. */
+static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64_t now)
+{
+	struct rist_peer *parent = new_peer->parent;
+	if (!parent || !parent->listening || !new_peer->sender_ctx ||
+	    new_peer->receiver_mode || new_peer->receiver_name[0] == '\0')
+		return false;
+
+	bool psk_active = new_peer->key_rx.key_size > 0;
+	bool srp_active = (new_peer->eap_ctx != NULL);
+	if (!psk_active && !srp_active)
+		return false;
+
+	uint64_t ka = new_peer->rtcp_keepalive_interval
+	              ? new_peer->rtcp_keepalive_interval
+	              : (uint64_t)RIST_PING_INTERVAL * RIST_CLOCK;
+	uint64_t silent_threshold = 2 * ka;
+
+	struct rist_peer *candidate = NULL;
+	int alive_duplicates = 0;
+	struct rist_peer *sib = parent->child;
+	while (sib) {
+		if (sib != new_peer &&
+		    sib->is_rtcp == new_peer->is_rtcp &&
+		    sib->is_data == new_peer->is_data &&
+		    sib->adv_flow_id == new_peer->adv_flow_id &&
+		    sib->receiver_name[0] != '\0' &&
+		    strncmp(sib->receiver_name, new_peer->receiver_name,
+		            RIST_MAX_HOSTNAME) == 0) {
+			bool silent = sib->last_pkt_received > 0 &&
+			              now > sib->last_pkt_received &&
+			              (now - sib->last_pkt_received) > silent_threshold;
+			if (sib->dead || silent) {
+				if (candidate == NULL)
+					candidate = sib;
+			} else {
+				alive_duplicates++;
+			}
+		}
+		sib = sib->sibling_next;
+	}
+
+	if (!candidate || alive_duplicates > 0)
+		return false;
+
+	memcpy(&candidate->u.address, &new_peer->u.address, new_peer->address_len);
+	candidate->address_len = new_peer->address_len;
+	candidate->address_family = new_peer->address_family;
+	candidate->remote_port = new_peer->remote_port;
+	candidate->dead = 0;
+	candidate->timed_out = 0;
+	candidate->last_pkt_received = now;
+	rist_log_priv(get_cctx(new_peer), RIST_LOG_INFO,
+	    "cname \"%s\" matched existing peer %"PRIu32
+	    "; migrated source tuple from new peer %"PRIu32
+	    " and retired it (NAT-rebind recovery, %s).\n",
+	    new_peer->receiver_name, candidate->adv_peer_id,
+	    new_peer->adv_peer_id, srp_active ? "SRP" : "PSK");
+
+#if HAVE_SRP_SUPPORT
+	/* Kick a fresh EAPOL START so re-auth fires now, not up to
+	 * EAP_REAUTH_PERIOD later. */
+	if (srp_active && candidate->eap_ctx)
+		_librist_proto_eap_start(candidate->eap_ctx);
+#endif
+
+	kill_peer(new_peer);
+	return true;
+}
+
+/* Receiver-caller socket rebind on a NAT source-port rebind /
+ * sender silence.  Plaintext callers only; encrypted streams use
+ * the listener-side path.  Linear backoff capped at
+ * REBIND_BACKOFF_CAP so a long-uptime receiver does not develop an
+ * arbitrarily long inter-attempt delay. */
+#define REBIND_BACKOFF_CAP 10
+static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
+{
+	struct rist_common_ctx *cctx = get_cctx(peer);
+	if (!peer || peer->parent || peer->listening ||
+	    !peer->receiver_mode || peer->multicast_sender ||
+	    peer->multicast_receiver)
+		return false;
+	if (cctx->profile <= RIST_PROFILE_SIMPLE)
+		return false;
+	if (peer->config.local_port != 0)
+		return false;
+	if (peer->key_rx.key_size > 0 || peer->eap_ctx != NULL)
+		return false;
+
+	/* Require silence beyond max(session_timeout, 4*keepalive) so a
+	 * misconfigured short session_timeout against a slower keepalive
+	 * cadence does not trigger a flap loop on legitimate streams. */
+	uint64_t ka = peer->rtcp_keepalive_interval
+	              ? peer->rtcp_keepalive_interval
+	              : (uint64_t)RIST_PING_INTERVAL * RIST_CLOCK;
+	uint64_t min_silence = peer->session_timeout > 4 * ka
+	                       ? peer->session_timeout : 4 * ka;
+	if (peer->last_pkt_received == 0 ||
+	    now <= peer->last_pkt_received ||
+	    (now - peer->last_pkt_received) <= min_silence)
+		return false;
+
+	uint32_t backoff_mult = peer->rebind_attempts > REBIND_BACKOFF_CAP
+	                        ? REBIND_BACKOFF_CAP : peer->rebind_attempts;
+	uint64_t min_gap = (uint64_t)backoff_mult * peer->session_timeout;
+	if (peer->last_rebind_time != 0 && now > peer->last_rebind_time &&
+	    (now - peer->last_rebind_time) < min_gap)
+		return false;
+
+	struct evsocket_ctx *evctx = cctx->evctx;
+	int old_sd = peer->sd;
+	uint16_t old_local_port = peer->local_port;
+
+	if (peer->event_recv) {
+		evsocket_delevent(evctx, peer->event_recv);
+		peer->event_recv = NULL;
+	}
+	if (old_sd >= 0) {
+		udpsocket_close(old_sd);
+		peer->sd = -1;
+	}
+
+	rist_create_socket(peer);
+	if (peer->sd < 0) {
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+		    "Caller socket rebind failed for peer %"PRIu32
+		    " (errno=%d), falling through to kill_peer.\n",
+		    peer->adv_peer_id, errno);
+		return false;
+	}
+
+	peer->event_recv = evsocket_addevent(evctx, peer->sd, EVSOCKET_EV_READ,
+	                                     rist_peer_recv_wrap,
+	                                     rist_peer_sockerr, peer);
+
+	/* Force a fresh handshake on the new tuple. */
+	peer->authenticated = false;
+	peer->dead = 0;
+	peer->timed_out = 0;
+	peer->last_pkt_received = now;
+	peer->next_periodic_rtcp = now;
+	peer->next_keepalive_packet = now;
+	peer->send_keepalive = true;
+	peer->send_first_connection_event = false;
+
+	peer->rebind_attempts++;
+	peer->last_rebind_time = now;
+
+	rist_log_priv(cctx, RIST_LOG_WARN,
+	    "Receiver peer %"PRIu32" silent past session_timeout "
+	    "(attempt %"PRIu32"); rebound caller socket %d->%d "
+	    "(local_port %u->%u) for NAT/dynamic-IP recovery.\n",
+	    peer->adv_peer_id, peer->rebind_attempts, old_sd, peer->sd,
+	    (unsigned)old_local_port, (unsigned)peer->local_port);
+
+	return true;
 }
 
 static void rist_peer_recv_wrap(struct evsocket_ctx *evctx, int fd, short revents, void *arg) {
@@ -4012,6 +4184,13 @@ void rist_timeout_check(struct rist_common_ctx *cctx, uint64_t now)
 			{
 				rist_log_priv2(cctx->logging_settings, RIST_LOG_WARN, "Listening peer %u timed out after %"PRIu64" ms\n", peer->adv_peer_id,
 					(now - last_rtcp_received)/ RIST_CLOCK);
+				if (try_caller_socket_rebind(peer, now))
+				{
+					/* Rebind kept the peer alive with a fresh
+					 * socket; skip kill_peer. */
+					peer = next;
+					continue;
+				}
 				kill_peer(peer);
 			}
 		} else if (peer->dead && peer->parent)
