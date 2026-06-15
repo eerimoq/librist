@@ -705,19 +705,34 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 			index = (index +1)& (f->receiver_queue_max -1);
 		}
 		//interpolate the arrival time, assuming CBR
-		if (next && previous)
+		/* Neighbours can be non-monotonic under arrival-based timing;
+		 * clamp the CBR estimate into the interval instead of asserting. */
+		if (next && previous && next->packet_time > previous->packet_time)
 		{
 			uint32_t steps = (next->seq - previous->seq);
 			if (f->short_seq)
 				steps = (uint16_t)steps;
-			uint64_t time_per_step = (next->packet_time - previous->packet_time) / steps;
 			uint32_t steps_since_previous = seq - previous->seq;
 			if (f->short_seq)
 				steps_since_previous = (uint16_t)steps_since_previous;
-			packet_time = previous->packet_time + (time_per_step * steps_since_previous);
-			assert(packet_time < next->packet_time);
+			if (steps > 1 && steps_since_previous > 0 && steps_since_previous < steps) {
+				/* multiply before dividing so integer rounding cannot push
+				 * the estimate up to or past next->packet_time */
+				uint64_t span = next->packet_time - previous->packet_time;
+				packet_time = previous->packet_time + (span * steps_since_previous) / steps;
+			} else {
+				/* seq is not strictly between the neighbours (gap, reorder
+				 * or sequence-number wrap): place it next to next. */
+				packet_time = next->packet_time - 1;
+			}
+			if (packet_time < previous->packet_time)
+				packet_time = previous->packet_time;
+			else if (packet_time > next->packet_time)
+				packet_time = next->packet_time;
 		} else if (next)
 		{
+			/* No usable previous neighbour, or neighbours whose times are
+			 * non-monotonic: use next's time. */
 			packet_time = next->packet_time;
 		}
 	}
