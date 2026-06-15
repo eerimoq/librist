@@ -2617,8 +2617,9 @@ static void kill_peer(struct rist_peer *peer)
 }
 
 /* Listener-side cname re-association for a NAT source-port rebind.
- * Gated on PSK/SRP being active because cname is forgeable in
- * plaintext.  Returns true after killing new_peer. */
+ * SRP only: the cname is not a per-peer secret, so an authenticated
+ * per-peer session is required before migrating an identity to a new
+ * source tuple.  Returns true after killing new_peer. */
 static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64_t now)
 {
 	struct rist_peer *parent = new_peer->parent;
@@ -2626,9 +2627,7 @@ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64
 	    new_peer->receiver_mode || new_peer->receiver_name[0] == '\0')
 		return false;
 
-	bool psk_active = new_peer->key_rx.key_size > 0;
-	bool srp_active = (new_peer->eap_ctx != NULL);
-	if (!psk_active && !srp_active)
+	if (!new_peer->eap_ctx || !eap_is_authenticated(new_peer->eap_ctx))
 		return false;
 
 	uint64_t ka = new_peer->rtcp_keepalive_interval
@@ -2673,14 +2672,14 @@ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64
 	rist_log_priv(get_cctx(new_peer), RIST_LOG_INFO,
 	    "cname \"%s\" matched existing peer %"PRIu32
 	    "; migrated source tuple from new peer %"PRIu32
-	    " and retired it (NAT-rebind recovery, %s).\n",
+	    " and retired it (NAT-rebind recovery, SRP).\n",
 	    new_peer->receiver_name, candidate->adv_peer_id,
-	    new_peer->adv_peer_id, srp_active ? "SRP" : "PSK");
+	    new_peer->adv_peer_id);
 
 #if HAVE_SRP_SUPPORT
 	/* Kick a fresh EAPOL START so re-auth fires now, not up to
 	 * EAP_REAUTH_PERIOD later. */
-	if (srp_active && candidate->eap_ctx)
+	if (candidate->eap_ctx)
 		_librist_proto_eap_start(candidate->eap_ctx);
 #endif
 
@@ -2688,11 +2687,10 @@ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64
 	return true;
 }
 
-/* Receiver-caller socket rebind on a NAT source-port rebind /
- * sender silence.  Plaintext callers only; encrypted streams use
- * the listener-side path.  Linear backoff capped at
- * REBIND_BACKOFF_CAP so a long-uptime receiver does not develop an
- * arbitrarily long inter-attempt delay. */
+/* Receiver-caller socket rebind on a NAT source-port rebind / sender
+ * silence.  Plaintext and shared-PSK callers; SRP callers recover via
+ * the listener-side reassociation path.  Linear backoff capped at
+ * REBIND_BACKOFF_CAP. */
 #define REBIND_BACKOFF_CAP 10
 static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
 {
@@ -2705,7 +2703,8 @@ static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
 		return false;
 	if (peer->config.local_port != 0)
 		return false;
-	if (peer->key_rx.key_size > 0 || peer->eap_ctx != NULL)
+	/* SRP recovers via the listener-side reassociation path. */
+	if (peer->eap_ctx != NULL)
 		return false;
 
 	/* Require silence beyond max(session_timeout, 4*keepalive) so a

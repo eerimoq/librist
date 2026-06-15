@@ -3,10 +3,14 @@
  *
  * Coverage for the receiver-caller socket rebind introduced for
  * upstream issue #188 (silent recovery from sender silence on
- * plaintext callers).
+ * plaintext and shared-PSK callers; SRP callers recover via the
+ * listener-side reassociation path instead).
+ *
+ * Usage:
+ *   test_caller_socket_rebind [psk]
  *
  * Topology (single hop, in-process):
- *   sender(listener, 127.0.0.1:PORT) <-- receiver(caller, plain)
+ *   sender(listener, 127.0.0.1:PORT) <-- receiver(caller, plain|psk)
  *
  * Sequence:
  *   1. Spin up sender + receiver, wait for handshake.
@@ -78,7 +82,7 @@ static void sender_status_cb(void *arg, struct rist_peer *peer,
 	}
 }
 
-static struct rist_ctx *spawn_sender(int port, void *cb_arg) {
+static struct rist_ctx *spawn_sender(int port, void *cb_arg, const char *crypto) {
 	struct rist_ctx *tx = NULL;
 	if (rist_sender_create(&tx, RIST_PROFILE_MAIN, 0, log_settings) != 0)
 		return NULL;
@@ -88,8 +92,8 @@ static struct rist_ctx *spawn_sender(int port, void *cb_arg) {
 	}
 	char url[256];
 	snprintf(url, sizeof(url),
-	         "rist://@127.0.0.1:%d?session-timeout=2000&keepalive-interval=500",
-	         port);
+	         "rist://@127.0.0.1:%d?session-timeout=2000&keepalive-interval=500%s",
+	         port, crypto);
 	struct rist_peer_config *pcfg = NULL;
 	if (rist_parse_address2(url, (void *)&pcfg) != 0) {
 		rist_destroy(tx);
@@ -109,8 +113,10 @@ static struct rist_ctx *spawn_sender(int port, void *cb_arg) {
 	return tx;
 }
 
-int main(void) {
-	const int listen_port = 22000;
+int main(int argc, char *argv[]) {
+	bool use_psk = (argc > 1 && strcmp(argv[1], "psk") == 0);
+	const char *crypto_suffix = use_psk ? "&secret=testkey1234&aes-type=128" : "";
+	const int listen_port = use_psk ? 22001 : 22000;
 	memset(&cb_state, 0, sizeof(cb_state));
 
 	if (rist_logging_set(&log_settings, RIST_LOG_INFO, log_cb,
@@ -119,17 +125,19 @@ int main(void) {
 		return 99;
 	}
 
+	fprintf(stderr, "== mode: %s ==\n", use_psk ? "PSK encrypted" : "plaintext");
+
 	/* spawn the first sender */
 	fprintf(stderr, "== spawning first sender on :%d ==\n", listen_port);
-	struct rist_ctx *tx1 = spawn_sender(listen_port, &cb_state.first_seen);
+	struct rist_ctx *tx1 = spawn_sender(listen_port, &cb_state.first_seen, crypto_suffix);
 	if (!tx1) {
 		fprintf(stderr, "sender create failed\n");
 		return 99;
 	}
 	usleep(200000);
 
-	/* spawn the receiver caller, plaintext, no local-port pin,
-	 * short session_timeout so the test runs fast. */
+	/* spawn the receiver caller, no local-port pin, short
+	 * session_timeout so the test runs fast. */
 	fprintf(stderr, "== spawning receiver caller ==\n");
 	struct rist_ctx *rx = NULL;
 	if (rist_receiver_create(&rx, RIST_PROFILE_MAIN, log_settings) != 0) {
@@ -140,8 +148,8 @@ int main(void) {
 	char rx_url[256];
 	snprintf(rx_url, sizeof(rx_url),
 	         "rist://127.0.0.1:%d?session-timeout=2000&keepalive-interval=500"
-	         "&cname=fix2-test",
-	         listen_port);
+	         "&cname=fix2-test%s",
+	         listen_port, crypto_suffix);
 	struct rist_peer_config *rx_pcfg = NULL;
 	if (rist_parse_address2(rx_url, (void *)&rx_pcfg) != 0) {
 		fprintf(stderr, "rx url parse failed\n");
@@ -219,7 +227,7 @@ int main(void) {
 
 	/* bring the sender back up; expect the rebound caller to find it */
 	fprintf(stderr, "== bringing a new sender up on :%d ==\n", listen_port);
-	struct rist_ctx *tx2 = spawn_sender(listen_port, &cb_state.second_seen);
+	struct rist_ctx *tx2 = spawn_sender(listen_port, &cb_state.second_seen, crypto_suffix);
 	if (!tx2) {
 		fprintf(stderr, "second sender create failed\n");
 		rist_destroy(rx);

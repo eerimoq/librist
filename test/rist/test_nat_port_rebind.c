@@ -3,34 +3,43 @@
  *
  * Coverage for the listener-side cname re-association introduced
  * for upstream issue #188 (NAT source-port rebind on a calling
- * receiver).
+ * receiver), and for the security hardening that restricts it to
+ * authenticated SRP sessions only.
  *
  * Topology:
  *   sender(listener, 127.0.0.1:LISTEN_PORT) <-- receiver(caller, src=PORT_A) round 1
  *                                           <-- receiver(caller, src=PORT_B) round 2
  *
  * Both receivers use the same cname so they look like the same
- * logical caller to the sender.  The expected distinct-caller
- * count on the sender depends on whether encryption is configured:
+ * logical caller to the sender.  The expected distinct-caller count
+ * on the sender depends on the crypto mode:
  *
- *   plaintext  -> 2 distinct callers  (gate refused to migrate; the
+ *   plaintext  -> 2 distinct callers  (gate refuses to migrate; the
  *                                      plaintext recovery path is the
  *                                      receiver-side socket rebind,
  *                                      covered by
  *                                      test_caller_socket_rebind.c)
- *   psk        -> 1 distinct caller   (encryption-gated migration
- *                                      fires; the new source tuple
- *                                      is absorbed into the existing
- *                                      peer record)
+ *   psk        -> 2 distinct callers  (gate refuses to migrate; under
+ *                                      a shared PSK the cname is not a
+ *                                      per-peer secret, so a forged
+ *                                      cname must NOT be allowed to
+ *                                      take over an existing peer
+ *                                      record -- see the security
+ *                                      reproducer test_psk_cname_hijack.c)
+ *   srp        -> 1 distinct caller   (migration fires; the caller is
+ *                                      authenticated with a per-peer
+ *                                      SRP session, so absorbing the
+ *                                      new source tuple into the
+ *                                      existing peer record is safe)
  *
- * The test passes in both modes when the observed count matches
- * the expected count.  A mismatch indicates either a regression in
- * the encryption gate (plaintext silently migrated -> 1 instead of
- * 2) or in the migration logic itself (psk failed to migrate ->
- * 2 instead of 1).
+ * The test passes when the observed count matches the expected count
+ * for the chosen mode.  A mismatch indicates either a regression in
+ * the SRP-only gate (plaintext/psk silently migrated -> 1 instead of
+ * 2) or in the migration logic itself (srp failed to migrate -> 2
+ * instead of 1).
  *
  * Usage:
- *   test_nat_port_rebind [psk]
+ *   test_nat_port_rebind [psk|srp]
  *
  * Exit codes:
  *   0  - observed count matched expected count for the chosen mode
@@ -40,6 +49,7 @@
  */
 
 #include "librist/librist.h"
+#include "librist/librist_srp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +62,9 @@
 #else
 #include <unistd.h>
 #endif
+
+#define SRP_USER "rebinduser"
+#define SRP_PASS "rebindpass-7421"
 
 static struct rist_logging_settings *log_settings = NULL;
 
@@ -98,7 +111,7 @@ static void sender_status_cb(void *arg, struct rist_peer *peer,
 	}
 }
 
-static struct rist_ctx *start_receiver_with_local_port(const char *url) {
+static struct rist_ctx *start_receiver_with_local_port(const char *url, bool srp) {
 	struct rist_ctx *rx = NULL;
 	if (rist_receiver_create(&rx, RIST_PROFILE_MAIN, log_settings) != 0)
 		return NULL;
@@ -114,6 +127,10 @@ static struct rist_ctx *start_receiver_with_local_port(const char *url) {
 		return NULL;
 	}
 	free(pcfg);
+	if (srp && rist_enable_eap_srp_2(peer, SRP_USER, SRP_PASS, NULL, NULL) != 0) {
+		rist_destroy(rx);
+		return NULL;
+	}
 	if (rist_start(rx) != 0) {
 		rist_destroy(rx);
 		return NULL;
@@ -123,8 +140,12 @@ static struct rist_ctx *start_receiver_with_local_port(const char *url) {
 
 int main(int argc, char *argv[]) {
 	bool use_psk = (argc > 1 && strcmp(argv[1], "psk") == 0);
+	bool use_srp = (argc > 1 && strcmp(argv[1], "srp") == 0);
 	const char *crypto_suffix = use_psk ? "&secret=testkey1234&aes-type=128" : "";
-	int listen_port = use_psk ? 19998 : 20998;
+	const char *mode_name = use_psk ? "PSK encrypted"
+	                       : use_srp ? "SRP authenticated"
+	                                 : "plaintext";
+	int listen_port = use_psk ? 19998 : use_srp ? 19997 : 20998;
 	char tx_url[256];
 	char rx_url[256];
 	snprintf(tx_url, sizeof(tx_url),
@@ -139,7 +160,7 @@ int main(int argc, char *argv[]) {
 		return 99;
 	}
 
-	/* sender, listener mode, MAIN profile, no encryption.
+	/* sender, listener mode, MAIN profile.
 	 * session-timeout is set well above the inter-round gap so the
 	 * round-1 peer record is still in the listener's child list when
 	 * the round-2 packets arrive but has been silent long enough to
@@ -154,8 +175,7 @@ int main(int argc, char *argv[]) {
 		rist_destroy(tx);
 		return 99;
 	}
-	fprintf(stderr, "== mode: %s, listen port %d ==\n",
-	        use_psk ? "PSK encrypted" : "plaintext", listen_port);
+	fprintf(stderr, "== mode: %s, listen port %d ==\n", mode_name, listen_port);
 	struct rist_peer_config *tx_pcfg = NULL;
 	if (rist_parse_address2(tx_url, (void *)&tx_pcfg) != 0) {
 		fprintf(stderr, "sender url parse failed\n");
@@ -170,6 +190,13 @@ int main(int argc, char *argv[]) {
 		return 99;
 	}
 	free(tx_pcfg);
+	/* listener single-user SRP authenticator: knows the same
+	 * username/password and creates the verifier internally. */
+	if (use_srp && rist_enable_eap_srp_2(tx_peer, SRP_USER, SRP_PASS, NULL, NULL) != 0) {
+		fprintf(stderr, "sender SRP enable failed\n");
+		rist_destroy(tx);
+		return 99;
+	}
 	if (rist_start(tx) != 0) {
 		fprintf(stderr, "sender start failed\n");
 		rist_destroy(tx);
@@ -179,21 +206,21 @@ int main(int argc, char *argv[]) {
 
 	/* round 1: receiver caller, source port 20001, cname "rebind-test".
 	 * session-timeout matches the sender so the receiver-side
-	 * silence-recovery path does not fire during this Fix #1 test. */
+	 * silence-recovery path does not fire during this test. */
 	fprintf(stderr, "\n== round 1: receiver from local-port=20001 ==\n");
 	snprintf(rx_url, sizeof(rx_url),
 	         "rist://127.0.0.1:%d?local-port=20001&cname=rebind-test"
 	         "&session-timeout=30000&keepalive-interval=1000%s",
 	         listen_port, crypto_suffix);
-	struct rist_ctx *rx1 = start_receiver_with_local_port(rx_url);
+	struct rist_ctx *rx1 = start_receiver_with_local_port(rx_url, use_srp);
 	if (!rx1) {
 		fprintf(stderr, "rx1 setup failed\n");
 		rist_destroy(tx);
 		return 99;
 	}
 
-	/* let handshake complete */
-	usleep(3000000);
+	/* let handshake complete (SRP needs an extra round trip) */
+	usleep(use_srp ? 5000000 : 3000000);
 
 	pthread_mutex_lock(&tracker_lock);
 	int after_round1 = tracker.count;
@@ -217,7 +244,7 @@ int main(int argc, char *argv[]) {
 	         "rist://127.0.0.1:%d?local-port=20002&cname=rebind-test"
 	         "&session-timeout=30000&keepalive-interval=1000%s",
 	         listen_port, crypto_suffix);
-	struct rist_ctx *rx2 = start_receiver_with_local_port(rx_url);
+	struct rist_ctx *rx2 = start_receiver_with_local_port(rx_url, use_srp);
 	if (!rx2) {
 		fprintf(stderr, "rx2 setup failed\n");
 		rist_destroy(tx);
@@ -225,7 +252,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* let round-2 handshake complete */
-	usleep(3000000);
+	usleep(use_srp ? 5000000 : 3000000);
 
 	pthread_mutex_lock(&tracker_lock);
 	int after_round2 = tracker.count;
@@ -242,27 +269,27 @@ int main(int argc, char *argv[]) {
 		return 2;
 	}
 
-	int expected = use_psk ? 1 : 2;
+	int expected = use_srp ? 1 : 2;
 	if (after_round2 == expected) {
-		if (use_psk)
-			fprintf(stderr, "PASS: psk migration absorbed the new "
-			                "tuple into the existing peer record "
+		if (use_srp)
+			fprintf(stderr, "PASS: authenticated-SRP migration absorbed "
+			                "the new tuple into the existing peer record "
 			                "(distinct_callers=%d as expected).\n",
 			        after_round2);
 		else
-			fprintf(stderr, "PASS: encryption gate refused migration "
-			                "in plaintext (distinct_callers=%d as "
-			                "expected; receiver-side recovery is "
-			                "covered separately).\n", after_round2);
+			fprintf(stderr, "PASS: SRP-only gate refused migration in %s "
+			                "mode (distinct_callers=%d as expected; "
+			                "receiver-side recovery is covered "
+			                "separately).\n", mode_name, after_round2);
 		return 0;
 	}
-	if (use_psk)
-		fprintf(stderr, "FAIL: psk migration did not fire; "
+	if (use_srp)
+		fprintf(stderr, "FAIL: authenticated-SRP migration did not fire; "
 		                "distinct_callers=%d, expected 1.\n",
 		        after_round2);
 	else
-		fprintf(stderr, "FAIL: encryption gate did NOT refuse "
-		                "migration in plaintext; distinct_callers=%d, "
-		                "expected 2.\n", after_round2);
+		fprintf(stderr, "FAIL: SRP-only gate did NOT refuse migration in "
+		                "%s mode; distinct_callers=%d, expected 2.\n",
+		        mode_name, after_round2);
 	return 1;
 }

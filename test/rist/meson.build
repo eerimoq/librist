@@ -43,9 +43,10 @@ test_reflector = executable('test_reflector',
                                 stdatomic_dependency
                             ])
 
-# issue #188 coverage: listener-side cname re-association.  Two
-# modes (plaintext / psk) exercise both branches of the encryption
-# gate.
+# issue #188 coverage: listener-side cname re-association.  Three
+# modes (plaintext / psk / srp) exercise the SRP-only gate: only an
+# authenticated per-peer SRP session may migrate an existing peer
+# record onto a new source tuple.
 test_nat_port_rebind = executable('test_nat_port_rebind',
                                   'test_nat_port_rebind.c',
                                   extra_sources,
@@ -57,8 +58,49 @@ test_nat_port_rebind = executable('test_nat_port_rebind',
                                       stdatomic_dependency
                                   ])
 
+# Security regression guard: a shared-PSK peer that forges the victim's
+# cname must NOT be absorbed into the victim's peer record (cname is not
+# a per-peer secret under PSK).
+test_psk_cname_hijack = executable('test_psk_cname_hijack',
+                                   'test_psk_cname_hijack.c',
+                                   extra_sources,
+                                   include_directories: inc,
+                                   link_with: librist,
+                                   dependencies: [
+                                       threads,
+                                       tools_dependencies,
+                                       stdatomic_dependency
+                                   ])
+
+# Multipath safety: two same-cname bonded paths must not be merged by
+# the cname re-association, and a healthy path must not rebind.
+test_multipath_cname = executable('test_multipath_cname',
+                                  'test_multipath_cname.c',
+                                  extra_sources,
+                                  include_directories: inc,
+                                  link_with: librist,
+                                  dependencies: [
+                                      threads,
+                                      tools_dependencies,
+                                      stdatomic_dependency
+                                  ])
+
+# Multipath safety: one bonded leg rebinds mid-stream while the other
+# stays alive; the survivor must be undisturbed and the stream must not
+# stall.
+test_multipath_leg_rebind = executable('test_multipath_leg_rebind',
+                                       'test_multipath_leg_rebind.c',
+                                       extra_sources,
+                                       include_directories: inc,
+                                       link_with: librist,
+                                       dependencies: [
+                                           threads,
+                                           tools_dependencies,
+                                           stdatomic_dependency
+                                       ])
+
 # issue #188 coverage: receiver-caller socket rebind on session
-# silence (plaintext only).
+# silence (plaintext + shared-PSK; SRP uses listener-side path).
 test_caller_socket_rebind = executable('test_caller_socket_rebind',
                                        'test_caller_socket_rebind.c',
                                        extra_sources,
@@ -75,12 +117,33 @@ test_caller_socket_rebind = executable('test_caller_socket_rebind',
 test('Sender restart test', test_sender_restart, args: ['5'], suite: ['regression', 'sender'])
 
 ###issue #188 NAT source-port rebind recovery
-test('NAT port rebind cname re-association (plaintext gate)', test_nat_port_rebind,
+test('NAT port rebind cname re-association (plaintext gate refuses)', test_nat_port_rebind,
      suite: ['regression', 'nat'], timeout: 90)
-test('NAT port rebind cname re-association (psk migration)', test_nat_port_rebind,
+test('NAT port rebind cname re-association (psk gate refuses)', test_nat_port_rebind,
      args: ['psk'], suite: ['regression', 'nat'], timeout: 90)
-test('Receiver caller socket rebind on silence', test_caller_socket_rebind,
+test('Receiver caller socket rebind on silence (plaintext)', test_caller_socket_rebind,
      suite: ['regression', 'nat'], timeout: 90)
+test('Receiver caller socket rebind on silence (psk)', test_caller_socket_rebind,
+     args: ['psk'], suite: ['regression', 'nat'], timeout: 90)
+# PSK cname forgery must not take over an existing peer record.
+test('NAT rebind PSK cname hijack is refused', test_psk_cname_hijack,
+     suite: ['regression', 'nat', 'security'], timeout: 90)
+# Two bonded same-cname paths must stay distinct and not rebind.
+test('Multipath same-cname paths stay distinct (psk)', test_multipath_cname,
+     suite: ['regression', 'nat', 'multipath'], timeout: 90)
+if have_srp
+	# Positive path: an authenticated SRP caller IS migrated onto the
+	# new source tuple after a NAT source-port rebind.
+	test('NAT port rebind cname re-association (srp migration)', test_nat_port_rebind,
+	     args: ['srp'], suite: ['regression', 'nat', 'srp'], timeout: 120)
+	# Two bonded SRP paths with the SAME username/password + cname must
+	# stay distinct even though the SRP gate lets re-association fire.
+	test('Multipath same-cname paths stay distinct (srp)', test_multipath_cname,
+	     args: ['srp'], suite: ['regression', 'nat', 'multipath', 'srp'], timeout: 120)
+	# One bonded SRP leg rebinds mid-stream while the other stays alive.
+	test('Multipath one leg rebinds mid-stream (srp)', test_multipath_leg_rebind,
+	     suite: ['regression', 'nat', 'multipath', 'srp'], timeout: 120)
+endif
 
 ###?profile= URL override tests (rist_*_create profile != URL profile)
 test('?profile=2 URL overrides Main to Advanced',
