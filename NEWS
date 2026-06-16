@@ -51,6 +51,13 @@ Features:
     buffer) while a higher-RTT peer holds the retransmission buffer.
 
 Bug Fixes:
+  - Advanced Profile (TR-06-3) RTT Echo Responses inflated the measured
+    round-trip time by a constant factor.  The sender will not retransmit
+    a packet again within one RTT of the previous attempt, so the inflated
+    value made it ignore the repeat NACKs needed when a retransmission is
+    itself lost, leaving packets unrecovered under sustained loss.  The
+    Advanced echo now uses calculate_rtt_delay(), as the Simple and Main
+    profiles do.
   - Fixed a receiver abort when a retransmitted or gap-filled packet's
     arrival time is interpolated.  With peers whose clocks are not
     synchronised the estimate could fall outside its neighbouring queue
