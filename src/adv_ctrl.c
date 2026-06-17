@@ -658,14 +658,10 @@ int rist_adv_recv_control(struct rist_peer *peer,
 		(void)req_ssrc;
 
 		uint64_t orig_ntp = ((uint64_t)orig_msw << 32) | orig_lsw;
-		uint64_t now = timestampNTP_u64();
-		uint64_t rtt_ntp = now - orig_ntp;
-		/* Convert NTP ticks to microseconds: rtt_us = rtt_ntp * 1e6 / 2^16 */
-		uint64_t rtt_us = (rtt_ntp * 1000000) >> 16;
-		rtt_us -= proc_delay;
-		peer->last_rtt = rtt_us;
+		peer->last_rtt = calculate_rtt_delay(orig_ntp, timestampNTP_u64(), proc_delay);
 		rist_log_priv(ctx, RIST_LOG_DEBUG,
-			"Advanced RTT Echo Response: RTT=%"PRIu64" us\n", rtt_us);
+			"Advanced RTT Echo Response: RTT=%"PRIu64" us\n",
+			(peer->last_rtt * 1000000ULL) >> 32);
 		return 0;
 	}
 
