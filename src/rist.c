@@ -413,7 +413,7 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 		if (RIST_UNLIKELY(!ctx->sender_retry_queue))
 		{
 			rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Could not create sender retry buffer of size %u MB, OOM\n",
-						  (unsigned)(RIST_SERVER_QUEUE_BUFFERS * sizeof(ctx->sender_retry_queue[0])) / 1000000);
+						  (unsigned)(RIST_RETRY_QUEUE_BUFFERS * sizeof(ctx->sender_retry_queue[0])) / 1000000);
 			ret = -1;
 			goto free_ctx_and_ret;
 		}
@@ -424,7 +424,21 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 	}
 
 	ctx->sender_queue_delete_index = 1;
-	ctx->sender_queue_max = RIST_SERVER_QUEUE_BUFFERS;
+	/* Advanced uses the (runtime-tunable) configured capacity; Simple/Main
+	 * keep the default ring. Heap-allocated so the size can be tuned via
+	 * rist_recovery_depth_set() before rist_start(). */
+	ctx->sender_queue_max = (ctx->common.profile == RIST_PROFILE_ADVANCED)
+			? ctx->common.recovery_queue_max : RIST_SERVER_QUEUE_BUFFERS;
+	ctx->sender_queue = calloc(ctx->sender_queue_max, sizeof(*ctx->sender_queue));
+	ctx->seq_index = calloc(ctx->sender_queue_max, sizeof(*ctx->seq_index));
+	if (RIST_UNLIKELY(!ctx->sender_queue || !ctx->seq_index))
+	{
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+					  "Could not allocate sender recovery ring (%zu entries), OOM\n",
+					  ctx->sender_queue_max);
+		ret = -1;
+		goto free_ctx_and_ret;
+	}
 	atomic_init(&ctx->sender_queue_write_index, 1);
 	atomic_init(&ctx->sender_queue_read_index, 0);
 
@@ -478,6 +492,11 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 
 	// Failed!
 free_ctx_and_ret:
+	if (ctx) {
+		free(ctx->sender_retry_queue);
+		free(ctx->sender_queue);
+		free(ctx->seq_index);
+	}
 	free(ctx);
 	free(rist_ctx);
 	return ret;
@@ -781,6 +800,101 @@ int rist_recovery_rtt_multiplier_set(struct rist_ctx *ctx, int multiplier)
 	return rist_recovery_rtt_multiplier_set_internal(cctx, multiplier);
 }
 
+/* Translate a recovery-depth exponent into the ring capacity in packets:
+ * (65536 << depth). depth is clamped to [MIN, MAX]. Returned as uint64_t
+ * because the top of the range (depth 16) is 2^32, which overflows a 32-bit
+ * size_t; the apply path rejects any size this platform cannot index. */
+static uint64_t rist_recovery_depth_to_packets(int depth)
+{
+	if (depth < RIST_RECOVERY_DEPTH_MIN)
+		depth = RIST_RECOVERY_DEPTH_MIN;
+	if (depth > RIST_RECOVERY_DEPTH_MAX)
+		depth = RIST_RECOVERY_DEPTH_MAX;
+	return (uint64_t)UINT16_SIZE << depth;
+}
+
+/* Resize the context recovery ring to `packets` (already a power of two in
+ * [UINT16_SIZE, 2^32]). The caller MUST guarantee rist_start() has not
+ * completed, so the sender ring can be reallocated with no data in flight.
+ * Returns 0 on success, -2 on OOM / size unrepresentable on this platform. */
+static int rist_recovery_depth_apply(struct rist_ctx *ctx, struct rist_common_ctx *cctx, uint64_t packets)
+{
+	if (packets > (uint64_t)(SIZE_MAX / (sizeof(struct rist_buffer *) + sizeof(uint32_t)))) {
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+			"Recovery depth too large to allocate on this platform (%llu packets)\n",
+			(unsigned long long)packets);
+		return -2;
+	}
+	size_t want = (size_t)packets;
+
+	if (cctx->profile != RIST_PROFILE_ADVANCED) {
+		cctx->recovery_queue_max = want;
+		rist_log_priv(cctx, RIST_LOG_INFO,
+			"Recovery depth request stored (%zu packets); only the Advanced "
+			"profile uses it (Simple/Main are 16-bit, capped at %u packets).\n",
+			want, (unsigned)UINT16_SIZE);
+		return 0;
+	}
+
+	/* The receiver allocates its ring per-flow and reads recovery_queue_max
+	 * directly, so nothing more to do there. The sender allocates its ring
+	 * at create time, so resize it now - safe because rist_start() has not
+	 * run yet and no data is flowing. On OOM the old ring (and
+	 * recovery_queue_max) is left untouched. */
+	if (ctx->mode == RIST_SENDER_MODE && ctx->sender_ctx) {
+		struct rist_sender *sender = ctx->sender_ctx;
+		if (sender->sender_queue_max != want) {
+			struct rist_buffer **nq = calloc(want, sizeof(*nq));
+			uint32_t *ni = calloc(want, sizeof(*ni));
+			if (!nq || !ni) {
+				free(nq);
+				free(ni);
+				rist_log_priv(cctx, RIST_LOG_ERROR,
+					"OOM resizing sender recovery ring to %zu packets\n", want);
+				return -2;
+			}
+			free(sender->sender_queue);
+			free(sender->seq_index);
+			sender->sender_queue = nq;
+			sender->seq_index = ni;
+			sender->sender_queue_max = want;
+			sender->sender_queue_delete_index = 1;
+			atomic_store_explicit(&sender->sender_queue_write_index, 1, memory_order_release);
+			atomic_store_explicit(&sender->sender_queue_read_index, 0, memory_order_release);
+		}
+	}
+
+	cctx->recovery_queue_max = want;
+	rist_log_priv(cctx, RIST_LOG_INFO,
+		"Advanced recovery buffer set to %zu packets (NACK window ~%zu packets, "
+		"~%zu MB of index arrays per context)\n",
+		want, want / 2,
+		(want * (sizeof(struct rist_buffer *) + sizeof(uint32_t))) / (1024 * 1024));
+	return 0;
+}
+
+int rist_recovery_depth_set(struct rist_ctx *ctx, uint8_t depth)
+{
+	struct rist_common_ctx *cctx = rist_struct_get_common(ctx);
+	if (!cctx)
+		return -1;
+
+	if (atomic_load_explicit(&cctx->startup_complete, memory_order_acquire)) {
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+			"rist_recovery_depth_set must be called before rist_start()\n");
+		return -1;
+	}
+
+	if (depth > RIST_RECOVERY_DEPTH_MAX) {
+		rist_log_priv(cctx, RIST_LOG_WARN,
+			"recovery depth %u out of range, clamping to %u\n",
+			(unsigned)depth, (unsigned)RIST_RECOVERY_DEPTH_MAX);
+		depth = RIST_RECOVERY_DEPTH_MAX;
+	}
+
+	return rist_recovery_depth_apply(ctx, cctx, rist_recovery_depth_to_packets(depth));
+}
+
 int rist_auth_handler_set(struct rist_ctx *ctx,
 						  int (*conn_cb)(void *arg, const char *connecting_ip, uint16_t connecting_port, const char *local_ip, uint16_t local_port, struct rist_peer *peer),
 						  int (*disconn_cb)(void *arg, struct rist_peer *peer),
@@ -1010,6 +1124,7 @@ int rist_peer_config_defaults_set_versioned(struct rist_peer_config *peer_config
 		if (version >= 5)
 		{
 			peer_config->recovery_priority = RIST_DEFAULT_RECOVERY_PRIORITY;
+			peer_config->recovery_depth = RIST_RECOVERY_DEPTH_DEFAULT;
 		}
 		return 0;
 	}
@@ -1224,6 +1339,25 @@ static int apply_url_profile_override(struct rist_common_ctx *cctx,
 	return 0;
 }
 
+/* If config carries a ?recovery-depth= request (version >= 5 and not
+ * DEFAULT), apply it to the context. Best-effort: ignored with a warning if
+ * rist_start has run (the sender ring cannot be resized with data in flight)
+ * since it must be set up front. Caller must hold peerlist_lock. Runs after
+ * apply_url_profile_override so a combined ?profile=2&recovery-depth=5
+ * URL sees the Advanced profile already in effect. */
+static void apply_url_recovery_depth(struct rist_common_ctx *cctx, struct rist_ctx *ctx,
+                                     const struct rist_peer_config *config)
+{
+	if (config->version < 5 || config->recovery_depth == RIST_RECOVERY_DEPTH_DEFAULT)
+		return;
+	if (atomic_load_explicit(&cctx->startup_complete, memory_order_acquire)) {
+		rist_log_priv(cctx, RIST_LOG_WARN,
+			"?recovery-depth in URL ignored: it must be set before rist_start().\n");
+		return;
+	}
+	rist_recovery_depth_apply(ctx, cctx, rist_recovery_depth_to_packets(config->recovery_depth));
+}
+
 int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct rist_peer_config *config) {
 	if (!ctx) {
 		rist_log_priv3(RIST_LOG_ERROR, "rist_peer_create call with null ctx\n");
@@ -1238,6 +1372,7 @@ int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct
 			pthread_mutex_unlock(&cctx->peerlist_lock);
 			return -1;
 		}
+		apply_url_recovery_depth(cctx, ctx, config);
 		ret = rist_receiver_peer_create(ctx->receiver_ctx, peer, config);
 	}
 	else if (ctx->mode == RIST_SENDER_MODE && ctx->sender_ctx) {
@@ -1247,6 +1382,7 @@ int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct
 			pthread_mutex_unlock(&cctx->peerlist_lock);
 			return -1;
 		}
+		apply_url_recovery_depth(cctx, ctx, config);
 		ret  =rist_sender_peer_create(ctx->sender_ctx, peer, config);
 	}
 	else

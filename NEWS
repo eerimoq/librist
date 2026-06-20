@@ -29,12 +29,19 @@ ABI/API:
     binaries must zero-initialise their config before the call: fields
     added in version 1+ (split_mode, merge_mode, profile, profile_set)
     are left untouched.
-  - RIST_PEER_CONFIG_VERSION bumped from 4 to 5 (one new field:
+  - RIST_PEER_CONFIG_VERSION bumped from 4 to 5 (two new fields:
     recovery_priority, populated by the ?recovery-priority= URL
-    parameter).  rist_peer_config_defaults_set_versioned() initialises
-    it to 0 for callers compiled against version 5 or later; zero-
-    initialised configs and callers built against an earlier version
-    keep the legacy NACK-routing behaviour.
+    parameter, and recovery_depth, populated by ?recovery-depth=).
+    rist_peer_config_defaults_set_versioned() initialises them for
+    callers compiled against version 5 or later (recovery_priority = 0,
+    recovery_depth = RIST_RECOVERY_DEPTH_DEFAULT); zero-initialised
+    configs and callers built against an earlier version keep the legacy
+    NACK-routing behaviour and the default recovery ring.
+  - New public API rist_recovery_depth_set(ctx, depth) and the
+    RIST_RECOVERY_DEPTH_MIN/DEFAULT/MAX macros (peer.h) size the
+    Advanced-profile retransmission ring.  depth is a base-2 exponent:
+    the ring holds 65536 << depth packets (default 3 = 8x = the prior
+    fixed size, range 0..16).  Must be called before rist_start().
   - New public macro RIST_PEER_WEIGHT_DUPLICATE (0) names the
     rist_peer_config.weight sentinel that selects packet duplication
     instead of weighted load-balancing.  Value unchanged.
@@ -49,6 +56,16 @@ Features:
     lowest-RTT selection.  Useful when the lowest-RTT peer cannot
     answer NACKs (e.g. a duplicate/relay feed with no retransmit
     buffer) while a higher-RTT peer holds the retransmission buffer.
+  - Tunable Advanced-profile recovery depth: the recovery rings are now
+    heap-allocated and profile-sized, so Simple/Main flows allocate only
+    their 16-bit ring (65536 packets) instead of the Advanced footprint.
+    The Advanced ring size is selectable via ?recovery-depth=N (or
+    rist_recovery_depth_set()), where N is a base-2 exponent and the ring
+    holds 65536 << N packets.  The default of 3 (524288 packets) matches
+    the previous fixed size; higher values trade RAM for a deeper NACK
+    window.  Simple/Main ignore the knob.  A config-time warning is
+    emitted when a peer's bitrate and buffer settings would exceed the
+    recovery ring's addressable window.
 
 Bug Fixes:
   - Advanced Profile (TR-06-3) RTT Echo Responses inflated the measured

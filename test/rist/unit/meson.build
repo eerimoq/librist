@@ -83,3 +83,19 @@ test_nack_peer_select = executable('test_nack_peer_select',
                                    'test_nack_peer_select.c',
                                    include_directories : inc)
 test('nack_peer_select', test_nack_peer_select, suite:['unit'])
+
+# rist_recovery_depth_set() level -> ring-size mapping/resize contract.
+# Includes rist-private.h to inspect internal ring sizes.
+test_recovery_depth = executable('test_recovery_depth',
+                                 'test_recovery_depth.c',
+                                 include_directories : inc,
+                                 link_with : librist,
+                                 dependencies : [threads, stdatomic_dependency])
+test('recovery_depth', test_recovery_depth, suite:['unit'])
+
+# ?recovery-depth= URL parsing exercised through the public API.
+test_url_recovery_depth_parse = executable('test_url_recovery_depth_parse',
+                                           'test_url_recovery_depth_parse.c',
+                                           include_directories : inc,
+                                           link_with : librist)
+test('url_recovery_depth_parse', test_url_recovery_depth_parse, suite:['unit'])

@@ -39,9 +39,16 @@ struct cJSON;
 #undef RIST_DEPRECATED
 
 #define UINT16_SIZE (UINT16_MAX + 1)
-// These 4 control the memory footprint and buffer capacity of the lib
+// These control the memory footprint and buffer capacity of the lib
 // They MUST be a power of two or wrap-around index calculations will break
+// RIST_SERVER_QUEUE_BUFFERS is the DEFAULT Advanced-profile recovery-ring
+// capacity (in packets), == UINT16_SIZE << RIST_RECOVERY_DEPTH_DEFAULT (8x).
+// The ring is heap-allocated per flow/sender and can be resized at runtime to
+// UINT16_SIZE << depth via rist_recovery_depth_set() / ?recovery-depth=, up to
+// RIST_RECOVERY_QUEUE_MAX (depth 16, the full 32-bit space). Large depths are
+// limited by available RAM. Simple/Main are always UINT16_SIZE.
 #define RIST_SERVER_QUEUE_BUFFERS ((UINT16_SIZE) * 8)
+#define RIST_RECOVERY_QUEUE_MAX ((uint64_t)(UINT16_SIZE) << 16)
 #define RIST_RETRY_QUEUE_BUFFERS ((UINT16_SIZE) * 4)
 #define RIST_OOB_QUEUE_BUFFERS ((UINT16_SIZE) * 2)
 #define RIST_DATAOUT_QUEUE_BUFFERS (1024)
@@ -195,7 +202,7 @@ struct rist_flow {
 	atomic_int shutdown;
 	int max_output_jitter;
 
-	struct rist_buffer *receiver_queue[RIST_SERVER_QUEUE_BUFFERS]; /* output queue */
+	struct rist_buffer **receiver_queue; /* output queue, heap-allocated to receiver_queue_max */
 
 	pthread_rwlock_t queue_lock;
 
@@ -312,6 +319,12 @@ struct rist_common_ctx {
 
 	/* Recovery buffer RTT multiplier (default 7, per RIST spec) */
 	int recovery_rtt_multiplier;
+
+	/* Advanced-profile recovery-ring capacity in packets (power of two).
+	 * Default RIST_SERVER_QUEUE_BUFFERS; tunable before rist_start() via
+	 * rist_recovery_depth_set(). Simple/Main ignore this and use
+	 * UINT16_SIZE. */
+	size_t recovery_queue_max;
 
 	/* Peer list sync - RW locks */
 	struct rist_peer *PEERS;
@@ -459,7 +472,7 @@ struct rist_sender {
 
 	bool sender_initialized;
 	uint32_t total_weight;
-	struct rist_buffer *sender_queue[RIST_SERVER_QUEUE_BUFFERS]; /* input queue */
+	struct rist_buffer **sender_queue; /* input queue, heap-allocated to sender_queue_max */
 	size_t sender_queue_bytesize;
 	size_t sender_queue_size;
 	size_t sender_queue_timelength;
@@ -484,9 +497,9 @@ struct rist_sender {
 	uint64_t cooldown_time;
 	int cooldown_mode;
 
-	/* Recovery — sized to RIST_SERVER_QUEUE_BUFFERS so Advanced Profile
+	/* Recovery - heap-allocated to sender_queue_max so Advanced Profile
 	 * can index with the full 32-bit seq space (seq & (queue_max - 1)). */
-	uint32_t seq_index[RIST_SERVER_QUEUE_BUFFERS];
+	uint32_t *seq_index;
 	size_t sender_recover_min_time;
 	size_t sender_queue_buffer_size;
 
