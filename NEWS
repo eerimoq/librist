@@ -73,6 +73,12 @@ Features:
     receiver accepts a Main-framed source and follows a mid-stream
     Main->Advanced upgrade.  Matched Advanced and matched Main pairs are
     unchanged.
+  - The default RIST profile is now Advanced (RIST_DEFAULT_PROFILE, and
+    the ristsender/ristreceiver/YAML defaults that follow it), changed
+    from Main.  Thanks to the interop above, a default Advanced endpoint
+    negotiates Advanced framing with an Advanced peer and falls back to
+    Main framing with a Main-only peer, so existing Main deployments keep
+    working.  Pass -p 1 (or profile: 1 in YAML) to force Main as before.
 
 Bug Fixes:
   - Advanced Profile (TR-06-3) RTT Echo Responses inflated the measured
