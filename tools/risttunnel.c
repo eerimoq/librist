@@ -94,7 +94,7 @@ static void usage(const char *name)
 		"  -e, --encryption-type INT   AES type: 128 or 256 (default: 128)\n"
 		"  -S, --statsinterval INT     Stats interval in ms (default: %d, 0=off)\n"
 		"  -v, --verbose-level INT     Log level 0-6 (default: 3)\n"
-		"  -p, --profile INT           RIST profile: 0=simple, 1=main (default: 1)\n"
+		"  -p, --profile INT           RIST profile: 0=simple, 1=main, 2=advanced (default: 2)\n"
 #if HAVE_SRP_SUPPORT
 		"  -F, --srpfile PATH          EAP-SRP verifier file (server side)\n"
 #endif
@@ -149,7 +149,7 @@ int main(int argc, char *argv[])
 	int encryption_type = 0;
 	int statsinterval = DEFAULT_STATS_INTERVAL;
 	enum rist_log_level loglevel = RIST_LOG_WARN;
-	enum rist_profile profile = RIST_PROFILE_MAIN;
+	enum rist_profile profile = RIST_DEFAULT_PROFILE;
 	struct rist_ctx *sender_ctx = NULL;
 	struct rist_ctx *receiver_ctx = NULL;
 	int tun_fd = -1;
