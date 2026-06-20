@@ -617,9 +617,15 @@ static inline void receiver_mark_missing(struct rist_flow *f, struct rist_peer *
 	} else {
 		packet_time_now = f->receiver_queue[current_seq]->packet_time;
 	}
-	uint32_t missing_count = (current_seq - f->last_seq_found) & UINT16_MAX;
-	//arbitrary large number to prevent incorrectly marking packets as missing when wrap-around occurs & we did not correctly detect as out of order
-	if (missing_count > 32768)
+	/* short_seq (Simple/Main) flows wrap at 16 bits; 32-bit (Advanced) flows
+	 * use the true gap so a real >64k loss is not truncated. Cap mirrors the
+	 * recovery-walk hole cap (UINT16_SIZE/2 short, receiver_queue_max/2 else). */
+	uint32_t missing_count = rist_seq_gap(current_seq, f->last_seq_found,
+	                                      f->short_seq);
+	uint32_t missing_count_cap = f->short_seq
+	        ? (UINT16_SIZE / 2)
+	        : (uint32_t)(f->receiver_queue_max / 2);
+	if (missing_count > missing_count_cap)
 		return;
 	uint64_t interpacket_time = (packet_time_now - packet_time_last) / (missing_count +1);
 	uint32_t missing_seq = (f->last_seq_found + counter);
@@ -810,7 +816,12 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 	   output time than the highest known output time) */
 	size_t reader_idx;
 	bool out_of_order = false;
-	uint32_t expected_seq = (f->last_seq_found +1) & (UINT16_MAX -1);
+	/* short_seq flows wrap at 16 bits; 32-bit (Advanced) flows compare against
+	 * the true next sequence, else every seq past 65535 mismatches. The 16-bit
+	 * mask is preserved byte-for-byte so Simple/Main behaviour is unchanged. */
+	uint32_t expected_seq = f->short_seq
+	        ? ((f->last_seq_found + 1) & (UINT16_MAX - 1))
+	        : (f->last_seq_found + 1);
 	if (RIST_UNLIKELY(packet_time < f->last_packet_ts && seq != expected_seq)) {
 		if (now > (packet_time + (f->recovery_buffer_ticks *1.1)))
 		{
