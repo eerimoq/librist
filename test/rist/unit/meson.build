@@ -84,6 +84,14 @@ test_nack_peer_select = executable('test_nack_peer_select',
                                    include_directories : inc)
 test('nack_peer_select', test_nack_peer_select, suite:['unit'])
 
+# Receiver gap-detector sequence-number gap helper (rist_seq_gap): verifies
+# 16-bit wrap for short-sequence (Simple/Main) flows vs the true >64k gap for
+# 32-bit (Advanced) flows. Pure, link-free.
+test_seq_gap = executable('test_seq_gap',
+                          'test_seq_gap.c',
+                          include_directories : inc)
+test('seq_gap', test_seq_gap, suite:['unit'])
+
 # rist_recovery_depth_set() level -> ring-size mapping/resize contract.
 # Includes rist-private.h to inspect internal ring sizes.
 test_recovery_depth = executable('test_recovery_depth',

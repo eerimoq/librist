@@ -39,6 +39,18 @@ struct cJSON;
 #undef RIST_DEPRECATED
 
 #define UINT16_SIZE (UINT16_MAX + 1)
+
+/* Forward sequence-number gap. short_seq (Simple/Main) flows wrap at 16 bits;
+ * full 32-bit (Advanced) flows use the true difference so a genuine >64k gap is
+ * not truncated. Inputs are modular counters, so the subtraction is unsigned
+ * (well-defined wrap) before the optional 16-bit mask. */
+static inline uint32_t rist_seq_gap(uint32_t current, uint32_t last,
+                                    bool short_seq)
+{
+	uint32_t gap = current - last;
+	return short_seq ? (gap & UINT16_MAX) : gap;
+}
+
 // These control the memory footprint and buffer capacity of the lib
 // They MUST be a power of two or wrap-around index calculations will break
 // RIST_SERVER_QUEUE_BUFFERS is the DEFAULT Advanced-profile recovery-ring
