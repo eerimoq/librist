@@ -92,6 +92,14 @@ test_seq_gap = executable('test_seq_gap',
                           include_directories : inc)
 test('seq_gap', test_seq_gap, suite:['unit'])
 
+# Expected-next-sequence helper (rist_seq_next): verifies 16-bit wrap for
+# short-sequence flows (incl. odd successors) and 32-bit successor for
+# Advanced flows. Pure, link-free.
+test_seq_next = executable('test_seq_next',
+                           'test_seq_next.c',
+                           include_directories : inc)
+test('seq_next', test_seq_next, suite:['unit'])
+
 # rist_recovery_depth_set() level -> ring-size mapping/resize contract.
 # Includes rist-private.h to inspect internal ring sizes.
 test_recovery_depth = executable('test_recovery_depth',

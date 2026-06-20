@@ -816,12 +816,7 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 	   output time than the highest known output time) */
 	size_t reader_idx;
 	bool out_of_order = false;
-	/* short_seq flows wrap at 16 bits; 32-bit (Advanced) flows compare against
-	 * the true next sequence, else every seq past 65535 mismatches. The 16-bit
-	 * mask is preserved byte-for-byte so Simple/Main behaviour is unchanged. */
-	uint32_t expected_seq = f->short_seq
-	        ? ((f->last_seq_found + 1) & (UINT16_MAX - 1))
-	        : (f->last_seq_found + 1);
+	uint32_t expected_seq = rist_seq_next(f->last_seq_found, f->short_seq);
 	if (RIST_UNLIKELY(packet_time < f->last_packet_ts && seq != expected_seq)) {
 		if (now > (packet_time + (f->recovery_buffer_ticks *1.1)))
 		{

@@ -51,6 +51,14 @@ static inline uint32_t rist_seq_gap(uint32_t current, uint32_t last,
 	return short_seq ? (gap & UINT16_MAX) : gap;
 }
 
+/* Next expected sequence number after `last`. short_seq (Simple/Main) flows
+ * wrap at 16 bits; 32-bit (Advanced) flows use the natural successor. */
+static inline uint32_t rist_seq_next(uint32_t last, bool short_seq)
+{
+	uint32_t next = last + 1;
+	return short_seq ? (next & UINT16_MAX) : next;
+}
+
 // These control the memory footprint and buffer capacity of the lib
 // They MUST be a power of two or wrap-around index calculations will break
 // RIST_SERVER_QUEUE_BUFFERS is the DEFAULT Advanced-profile recovery-ring
