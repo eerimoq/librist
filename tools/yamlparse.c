@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <string.h>
 #include "headers.h"
+#include <librist/peer.h>
 #include "logging.h"
 
 #ifndef strndup
@@ -241,7 +242,7 @@ rist_tools_config_object *parse_yaml(char * file){
 
 	// Initialize rist_tools_config_object (non-zero values)
 	config = calloc(1, sizeof(rist_tools_config_object));
-	config->profile = RIST_PROFILE_MAIN;
+	config->profile = RIST_DEFAULT_PROFILE;
 	config->stats_interval = 1000;
 	config->verbose_level = RIST_LOG_INFO;
 #ifdef HAVE_PROMETHEUS_SUPPORT

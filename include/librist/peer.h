@@ -37,7 +37,7 @@ struct rist_peer;
 #define RIST_DEFAULT_MIN_RETRIES (6)
 #define RIST_DEFAULT_MAX_RETRIES (20)
 #define RIST_DEFAULT_VERBOSE_LEVEL RIST_LOG_INFO
-#define RIST_DEFAULT_PROFILE RIST_PROFILE_MAIN
+#define RIST_DEFAULT_PROFILE RIST_PROFILE_ADVANCED
 #define RIST_DEFAULT_SESSION_TIMEOUT (2000)
 #define RIST_DEFAULT_KEEPALIVE_INTERVAL (1000)
 #define RIST_DEFAULT_TIMING_MODE RIST_TIMING_MODE_SOURCE
@@ -84,6 +84,22 @@ enum librist_merge_mode
 };
 
 #define RIST_PEER_CONFIG_VERSION (5)
+
+/* Advanced-profile recovery depth: the base-2 exponent of the retransmission
+ * ring size. The ring holds (65536 << depth) packets, i.e. 2^depth times the
+ * 16-bit base buffer (65536), and the addressable NACK window is roughly half
+ * the ring. Each step doubles the buffer:
+ *
+ *   depth  multiplier   ring packets   approx NACK window
+ *     0       1x            65536            32768
+ *     3       8x           524288           262144   (default, legacy behavior)
+ *     6      64x          4194304          2097152
+ *    16   65536x      4294967296       2147483648   (full 32-bit seq space)
+ *
+ * Simple/Main are inherently 16-bit and ignore this setting. */
+#define RIST_RECOVERY_DEPTH_MIN     (0)
+#define RIST_RECOVERY_DEPTH_DEFAULT (3)   /* 8x the 16-bit base = legacy default */
+#define RIST_RECOVERY_DEPTH_MAX     (16)  /* full 32-bit sequence space */
 
 struct rist_peer_config
 {
@@ -191,6 +207,12 @@ struct rist_peer_config
 	 * peer carrying the same flow cannot answer NACKs (e.g. a
 	 * duplicate/relay feed with no retransmit cache). */
 	uint32_t recovery_priority;
+
+	/* Advanced-profile recovery depth (?recovery-depth= URL knob): base-2
+	 * exponent of the retransmission ring size, RIST_RECOVERY_DEPTH_MIN..MAX.
+	 * Defaults to RIST_RECOVERY_DEPTH_DEFAULT. Only meaningful on the Advanced
+	 * profile and only before rist_start(). Version 5+. */
+	uint8_t recovery_depth;
 };
 
 /**

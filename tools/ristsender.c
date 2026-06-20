@@ -710,7 +710,7 @@ int main(int argc, char *argv[])
 	int buffer_size = 0;
 	int encryption_type = 0;
 	int statsinterval = 1000;
-	enum rist_profile profile = RIST_PROFILE_MAIN;
+	enum rist_profile profile = RIST_DEFAULT_PROFILE;
 	enum rist_log_level loglevel = RIST_LOG_INFO;
 	bool npd = false;
 	int faststart = 0;

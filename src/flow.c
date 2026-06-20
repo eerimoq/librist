@@ -167,6 +167,7 @@ void rist_delete_flow(struct rist_receiver *ctx, struct rist_flow *f)
 		current_flow = current_flow->next;
 	}
 	pthread_mutex_unlock(&ctx->common.flows_lock);
+	free(f->receiver_queue);
 	free(f);
 }
 
@@ -205,6 +206,26 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 		return NULL;
 	}
 
+	/* Recovery ring: Simple/Main are hard-capped at 16 bits; Advanced uses
+	 * the configured capacity. Heap-allocated so the 16-bit profiles don't
+	 * pay the Advanced footprint. Advanced flows default to 32-bit framing
+	 * but recv_data refines short_seq from the wire so a Main-framed source
+	 * still works; the ring size stays fixed per context regardless. */
+	if (ctx->common.profile < RIST_PROFILE_ADVANCED) {
+		f->short_seq = true;
+		f->receiver_queue_max = UINT16_SIZE;
+	} else {
+		f->short_seq = false;
+		f->receiver_queue_max = ctx->common.recovery_queue_max;
+	}
+	f->receiver_queue = calloc(f->receiver_queue_max, sizeof(*f->receiver_queue));
+	if (!f->receiver_queue) {
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+			"OOM allocating receiver recovery ring (%zu entries)\n", f->receiver_queue_max);
+		free(f);
+		return NULL;
+	}
+
 	f->flow_id = flow_id;
 	f->receiver_id = ctx->id;
 	f->stats_next_time = timestampNTP_u64();
@@ -213,12 +234,14 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 	if (!f->dataout_fifo_queue) {
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 			"OOM allocating dataout fifo queue (%zu entries)\n", ctx->fifo_queue_size);
+		free(f->receiver_queue);
 		free(f);
 		return NULL;
 	}
 	int ret = pthread_cond_init(&f->condition, NULL);
 	if (ret) {
 		free(f->dataout_fifo_queue);
+		free(f->receiver_queue);
 		free(f);
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Error %d calling pthread_cond_init\n", ret);
 		return NULL;
@@ -228,6 +251,7 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 	if (ret){
 		pthread_cond_destroy(&f->condition);
 		free(f->dataout_fifo_queue);
+		free(f->receiver_queue);
 		free(f);
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Error %d calling pthread_mutex_init\n", ret);
 		return NULL;
@@ -257,6 +281,7 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 		pthread_mutex_destroy(&f->mutex);
 		pthread_cond_destroy(&f->condition);
 		free(f->dataout_fifo_queue);
+		free(f->receiver_queue);
 		free(f);
 		return NULL;
 	}
@@ -322,13 +347,8 @@ int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id)
 		if (p->config.timing_mode == RIST_TIMING_MODE_RTC)
 			f->rtc_timing_mode = true;
 
-		if (ctx->common.profile < RIST_PROFILE_ADVANCED) {
-			f->short_seq = true;
-			f->receiver_queue_max = UINT16_SIZE;
-		}
-		else
-			f->receiver_queue_max = RIST_SERVER_QUEUE_BUFFERS;
-
+		/* short_seq + receiver_queue_max are set (and the ring allocated)
+		 * inside create_flow() now. */
 		f->recovery_buffer_ticks = p->recovery_buffer_ticks;
 		rist_log_priv(&ctx->common, RIST_LOG_INFO, "FLOW #%"PRIu32" created (short=%d)\n", flow_id, f->short_seq);
 	} else {

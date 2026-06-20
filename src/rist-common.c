@@ -310,6 +310,20 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp > 0 && temp <= 65535)
 					output_peer_config->local_port = (uint16_t)temp;
+			} else if (output_peer_config->version >= 5 &&
+			           strcmp( url_params[i].key, RIST_URL_PARAM_RECOVERY_DEPTH ) == 0) {
+				char *endp = NULL;
+				long temp = strtol(val, &endp, 10);
+				if (endp == val || *endp != '\0' ||
+				    temp < RIST_RECOVERY_DEPTH_MIN || temp > RIST_RECOVERY_DEPTH_MAX) {
+					ret = -1;
+					fprintf(stderr, "Invalid recovery-depth '%s'; expected %d..%d "
+						"(ring = 65536 << depth packets; default %d)\n", val,
+						RIST_RECOVERY_DEPTH_MIN, RIST_RECOVERY_DEPTH_MAX,
+						RIST_RECOVERY_DEPTH_DEFAULT);
+				} else {
+					output_peer_config->recovery_depth = (uint8_t)temp;
+				}
 			} else if (output_peer_config->version >= 4 &&
 			           strcmp( url_params[i].key, RIST_URL_PARAM_PROFILE ) == 0) {
 				/* version >= 4: writing profile fields on a
@@ -369,6 +383,46 @@ int rist_recovery_rtt_multiplier_set_internal(struct rist_common_ctx *ctx, int m
 	return -1;
 }
 
+/* Reference packet size for the config-time recovery-window sanity check.
+ * 7x188 MPEG-TS over RTP is the common RIST framing. Smaller packets put
+ * MORE packets in the buffer and make the window tighter, so this estimate
+ * is deliberately optimistic: it only warns when the configuration clearly
+ * overruns the window even with full-size packets. */
+#define RIST_RECOVERY_REF_PKT_BYTES 1316
+
+/* Warn (once, at peer-config time) if the configured recovery-maxbitrate and
+ * max buffer would queue more packets than the recovery window can address.
+ * Packets beyond the window cannot be retransmitted regardless of how many
+ * NACKs are sent. window is the addressable window in packets for this role
+ * (receiver NACK window or sender retransmit window). */
+static void rist_warn_recovery_window(struct rist_peer *peer, size_t window, bool sender)
+{
+	uint32_t maxbitrate = peer->config.recovery_maxbitrate;   /* kbps */
+	uint32_t length_max = peer->config.recovery_length_max;    /* ms   */
+	if (maxbitrate == 0 || length_max == 0 || window == 0)
+		return;
+	uint64_t pkts_in_buffer =
+		(uint64_t)maxbitrate * length_max / (RIST_RECOVERY_REF_PKT_BYTES * 8);
+	if (pkts_in_buffer <= window)
+		return;
+	struct rist_common_ctx *cctx = get_cctx(peer);
+	bool advanced = (cctx->profile == RIST_PROFILE_ADVANCED);
+	rist_log_priv(cctx, RIST_LOG_WARN,
+		"Peer #%"PRIu32": recovery config exceeds the %s recovery window. "
+		"At %u kbps a %u ms buffer holds ~%"PRIu64" packets (assuming ~%d-byte "
+		"packets; smaller packets are worse), but the %s-profile %s window "
+		"addresses only %zu packets - packets beyond it cannot be retransmitted. %s\n",
+		peer->adv_peer_id,
+		sender ? "sender" : "receiver",
+		maxbitrate, length_max, pkts_in_buffer, RIST_RECOVERY_REF_PKT_BYTES,
+		advanced ? "Advanced" : (cctx->profile == RIST_PROFILE_MAIN ? "Main" : "Simple"),
+		sender ? "retransmit" : "NACK",
+		window,
+		advanced
+			? "Lower recovery-maxbitrate/buffer, or enlarge the ring via ?recovery-depth= (or rist_recovery_depth_set()) before rist_start()."
+			: "Lower recovery-maxbitrate/buffer, or use the Advanced profile for a 32-bit sequence space.");
+}
+
 static void init_peer_settings(struct rist_peer *peer)
 {
 	peer->eight_times_rtt = peer->config.recovery_rtt_min * 8;
@@ -383,6 +437,12 @@ static void init_peer_settings(struct rist_peer *peer)
 			(uint32_t)(peer->recovery_buffer_ticks / RIST_CLOCK) * recovery_maxbitrate_mbps /
 			(sizeof(struct rist_gre_seq) + sizeof(struct rist_rtp_hdr) + sizeof(uint32_t));
 
+		{
+			struct rist_common_ctx *cctx = get_cctx(peer);
+			size_t rwin = ((cctx->profile == RIST_PROFILE_ADVANCED)
+				? cctx->recovery_queue_max : UINT16_SIZE) / 2;
+			rist_warn_recovery_window(peer, rwin, false);
+		}
 
 		rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
 				"New peer with id #%"PRIu32" was configured with maxrate=%d/%d bufmin=%d bufmax=%d reorder=%d rttmin=%d rttmax=%d congestion_control=%d min_retries=%d max_retries=%d\n",
@@ -394,6 +454,11 @@ static void init_peer_settings(struct rist_peer *peer)
 	else {
 		assert(peer->sender_ctx != NULL);
 		struct rist_sender *ctx = peer->sender_ctx;
+		{
+			size_t swin = ((ctx->common.profile == RIST_PROFILE_ADVANCED)
+				? ctx->sender_queue_max : UINT16_SIZE) / 2;
+			rist_warn_recovery_window(peer, swin, true);
+		}
 		/* Global context settings */
 		if (peer->config.recovery_maxbitrate > ctx->recovery_maxbitrate_max) {
 			ctx->recovery_maxbitrate_max = peer->config.recovery_maxbitrate;
@@ -2112,7 +2177,7 @@ static bool rist_receiver_rtcp_authenticate(struct rist_peer *peer, uint32_t seq
 }
 
 static void rist_receiver_recv_data(struct rist_peer *peer, uint32_t seq, uint32_t flow_id,
-		uint64_t source_time, uint64_t packet_recv_time, struct rist_buffer *payload, uint8_t retry, uint8_t payload_type, size_t ingest_size, size_t ts_null_bytes)
+		uint64_t source_time, uint64_t packet_recv_time, struct rist_buffer *payload, uint8_t retry, uint8_t payload_type, size_t ingest_size, size_t ts_null_bytes, bool pkt_short_seq)
 {
 	assert(peer->receiver_ctx != NULL);
 	struct rist_receiver *ctx = peer->receiver_ctx;
@@ -2120,6 +2185,27 @@ static void rist_receiver_recv_data(struct rist_peer *peer, uint32_t seq, uint32
 	if (!rist_receiver_data_authenticate(peer, packet_recv_time, flow_id)) {
 		// Error logging happens inside the function
 		return;
+	}
+
+	/* Advanced contexts default to 32-bit framing but interoperate with a
+	 * Main-framed (16-bit) source: track the actual wire framing of the data
+	 * so the seq/wrap math matches. Simple/Main are always 16-bit.
+	 *
+	 * TR-06-3 Section 9 lets a flow switch framing mid-stream (Main->Advanced
+	 * upgrade once the peer advertises I=1, or a legacy Main-only source that
+	 * never upgrades). The two framings carry different seq widths AND
+	 * timestamp encodings, so mixing them in one flow corrupts the timing
+	 * baseline. Treat a framing change like a flow-id change: drop the old
+	 * baseline so the next enqueue re-derives time_offset and the seq->idx
+	 * mapping from the new framing instead of blending the two. */
+	if (ctx->common.profile >= RIST_PROFILE_ADVANCED && peer->flow &&
+	    peer->flow->short_seq != pkt_short_seq) {
+		rist_log_priv(&ctx->common, RIST_LOG_INFO,
+			"Flow %u wire framing changed to %s sequence numbers, "
+			"resetting flow timing baseline\n",
+			peer->flow->flow_id, pkt_short_seq ? "16-bit" : "32-bit");
+		peer->flow->short_seq = pkt_short_seq;
+		peer->flow->receiver_queue_has_items = false;
 	}
 
 	//rist_log_priv(&ctx->common, RIST_LOG_ERROR,
@@ -3077,7 +3163,7 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 							};
 							rist_receiver_recv_data(p, adv_parsed.seq, adv_flow_id,
 								adv_source_time, now, &adv_payload, retry,
-								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0);
+								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0, false);
 						}
 						return;
 					}
@@ -3686,7 +3772,7 @@ protocol_bypass:
 			else {
 				size_t received_bytes = recv_bufsize - payload_offset; //use the unexpanded size to show real BW
 				rist_calculate_bitrate(received_bytes, &p->bw);
-				rist_receiver_recv_data(p, seq, flow_id, source_time, now, &payload, retry, payload_type, received_bytes, ts_null_bytes);
+				rist_receiver_recv_data(p, seq, flow_id, source_time, now, &payload, retry, payload_type, received_bytes, ts_null_bytes, true);
 			}
 			break;
 		case RIST_PAYLOAD_TYPE_EAPOL:
@@ -4325,6 +4411,7 @@ int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 #endif
 	ctx->evctx = evsocket_create();
 	ctx->rist_max_jitter = RIST_MAX_JITTER * RIST_CLOCK;
+	ctx->recovery_queue_max = RIST_SERVER_QUEUE_BUFFERS;
 	if (profile > RIST_PROFILE_ADVANCED) {
 		rist_log_priv3( RIST_LOG_ERROR, "Profile not supported (%d), using main profile instead\n", profile);
 		profile = RIST_PROFILE_MAIN;
@@ -5017,6 +5104,7 @@ void rist_sender_destroy_local(struct rist_sender *ctx)
 
 	rist_log_priv(&ctx->common, RIST_LOG_INFO, "Freeing up context memory allocations\n");
 	free(ctx->sender_retry_queue);
+	ctx->sender_retry_queue = NULL;
 	struct rist_buffer *b = NULL;
 	while(1) {
 		b = ctx->sender_queue[ctx->sender_queue_delete_index];
@@ -5040,6 +5128,10 @@ void rist_sender_destroy_local(struct rist_sender *ctx)
 
 	rist_logging_unset_global_if_matches(ctx->common.logging_settings);
 
+	free(ctx->sender_queue);
+	ctx->sender_queue = NULL;
+	free(ctx->seq_index);
+	ctx->seq_index = NULL;
 	free(ctx);
 	ctx = NULL;
 }

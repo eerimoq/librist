@@ -50,7 +50,7 @@
 pthread_mutex_t signal_lock;
 static int signalReceived = 0;
 static struct rist_logging_settings logging_settings = LOGGING_SETTINGS_INITIALIZER;
-enum rist_profile profile = RIST_PROFILE_MAIN;
+enum rist_profile profile = RIST_DEFAULT_PROFILE;
 static int peer_connected_count = 0;
 static int noflow_counter = 0;
 
