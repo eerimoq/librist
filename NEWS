@@ -66,6 +66,13 @@ Features:
     window.  Simple/Main ignore the knob.  A config-time warning is
     emitted when a peer's bitrate and buffer settings would exceed the
     recovery ring's addressable window.
+  - Advanced/Main profile interoperability (TR-06-3 Section 9): an
+    Advanced sender starts in Main framing and upgrades a peer to
+    Advanced framing only after that peer advertises Advanced capability,
+    so a Main-only receiver can still decode the stream.  An Advanced
+    receiver accepts a Main-framed source and follows a mid-stream
+    Main->Advanced upgrade.  Matched Advanced and matched Main pairs are
+    unchanged.
 
 Bug Fixes:
   - Advanced Profile (TR-06-3) RTT Echo Responses inflated the measured

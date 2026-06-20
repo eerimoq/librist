@@ -81,8 +81,15 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 
 	/* Advanced Profile (VSF TR-06-3): build RTP-based packet directly,
 	 * bypassing GRE framing entirely. Control and OOB are handled
-	 * separately through rist_adv_send_control(). */
+	 * separately through rist_adv_send_control().
+	 *
+	 * TR-06-3 Section 9 (interop): an Advanced device "shall start in Main
+	 * Profile mode" and only switch to Advanced framing for a peer once that
+	 * peer advertises Advanced capability (I=1 in its Main keep-alives, which
+	 * sets remote_supports_advanced). Until then we emit Main-conformant
+	 * media so a Main-only peer can decode it. */
 	if (ctx->profile == RIST_PROFILE_ADVANCED &&
+	    p->remote_supports_advanced &&
 	    payload_type != RIST_PAYLOAD_TYPE_DATA_OOB &&
 	    payload_type != RIST_PAYLOAD_TYPE_RTCP &&
 	    payload_type != RIST_PAYLOAD_TYPE_RTCP_NACK) {

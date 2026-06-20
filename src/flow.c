@@ -208,7 +208,9 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 
 	/* Recovery ring: Simple/Main are hard-capped at 16 bits; Advanced uses
 	 * the configured capacity. Heap-allocated so the 16-bit profiles don't
-	 * pay the Advanced footprint. */
+	 * pay the Advanced footprint. Advanced flows default to 32-bit framing
+	 * but recv_data refines short_seq from the wire so a Main-framed source
+	 * still works; the ring size stays fixed per context regardless. */
 	if (ctx->common.profile < RIST_PROFILE_ADVANCED) {
 		f->short_seq = true;
 		f->receiver_queue_max = UINT16_SIZE;

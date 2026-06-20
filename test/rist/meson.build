@@ -163,6 +163,27 @@ test('?profile=2 URL overrides Simple to Advanced',
      args: ['0', 'rist://@127.0.0.1:7086?profile=2', 'rist://127.0.0.1:7086?profile=2', '0'],
      suite: ['url-profile', 'advanced', 'unicast', 'server'])
 
+###Cross-profile interop (TR-06-3 Section 9): mismatched sender/receiver profiles
+### on one flow. Exercises the Advanced sender's Main-Profile fallback (sends
+### Main-conformant media until the peer advertises I=1) and the Advanced
+### receiver's mid-stream framing-transition reset.
+test('Interop - Advanced sender to Main receiver',
+     test_send_receive,
+     args: ['1', 'rist://@127.0.0.1:7090?profile=1', 'rist://127.0.0.1:7090?profile=2', '0'],
+     suite: ['interop', 'advanced', 'main', 'unicast'])
+test('Interop - Advanced sender to Main receiver + 10% loss',
+     test_send_receive,
+     args: ['1', 'rist://@127.0.0.1:7092?profile=1&rtt-max=10&rtt-min=1', 'rist://127.0.0.1:7092?profile=2&rtt-max=10&rtt-min=1', '10'],
+     suite: ['interop', 'advanced', 'main', 'unicast'])
+test('Interop - Main sender to Advanced receiver',
+     test_send_receive,
+     args: ['2', 'rist://@127.0.0.1:7094?profile=2', 'rist://127.0.0.1:7094?profile=1', '0'],
+     suite: ['interop', 'advanced', 'main', 'unicast'])
+test('Interop - Main sender to Advanced receiver + 10% loss',
+     test_send_receive,
+     args: ['2', 'rist://@127.0.0.1:7096?profile=2&rtt-max=10&rtt-min=1', 'rist://127.0.0.1:7096?profile=1&rtt-max=10&rtt-min=1', '10'],
+     suite: ['interop', 'advanced', 'main', 'unicast'])
+
 ###Reflector tests
 test('Reflector functionality', test_reflector, suite: ['main', 'reflector'])
 

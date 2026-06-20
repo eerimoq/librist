@@ -2177,7 +2177,7 @@ static bool rist_receiver_rtcp_authenticate(struct rist_peer *peer, uint32_t seq
 }
 
 static void rist_receiver_recv_data(struct rist_peer *peer, uint32_t seq, uint32_t flow_id,
-		uint64_t source_time, uint64_t packet_recv_time, struct rist_buffer *payload, uint8_t retry, uint8_t payload_type, size_t ingest_size, size_t ts_null_bytes)
+		uint64_t source_time, uint64_t packet_recv_time, struct rist_buffer *payload, uint8_t retry, uint8_t payload_type, size_t ingest_size, size_t ts_null_bytes, bool pkt_short_seq)
 {
 	assert(peer->receiver_ctx != NULL);
 	struct rist_receiver *ctx = peer->receiver_ctx;
@@ -2185,6 +2185,27 @@ static void rist_receiver_recv_data(struct rist_peer *peer, uint32_t seq, uint32
 	if (!rist_receiver_data_authenticate(peer, packet_recv_time, flow_id)) {
 		// Error logging happens inside the function
 		return;
+	}
+
+	/* Advanced contexts default to 32-bit framing but interoperate with a
+	 * Main-framed (16-bit) source: track the actual wire framing of the data
+	 * so the seq/wrap math matches. Simple/Main are always 16-bit.
+	 *
+	 * TR-06-3 Section 9 lets a flow switch framing mid-stream (Main->Advanced
+	 * upgrade once the peer advertises I=1, or a legacy Main-only source that
+	 * never upgrades). The two framings carry different seq widths AND
+	 * timestamp encodings, so mixing them in one flow corrupts the timing
+	 * baseline. Treat a framing change like a flow-id change: drop the old
+	 * baseline so the next enqueue re-derives time_offset and the seq->idx
+	 * mapping from the new framing instead of blending the two. */
+	if (ctx->common.profile >= RIST_PROFILE_ADVANCED && peer->flow &&
+	    peer->flow->short_seq != pkt_short_seq) {
+		rist_log_priv(&ctx->common, RIST_LOG_INFO,
+			"Flow %u wire framing changed to %s sequence numbers, "
+			"resetting flow timing baseline\n",
+			peer->flow->flow_id, pkt_short_seq ? "16-bit" : "32-bit");
+		peer->flow->short_seq = pkt_short_seq;
+		peer->flow->receiver_queue_has_items = false;
 	}
 
 	//rist_log_priv(&ctx->common, RIST_LOG_ERROR,
@@ -3142,7 +3163,7 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 							};
 							rist_receiver_recv_data(p, adv_parsed.seq, adv_flow_id,
 								adv_source_time, now, &adv_payload, retry,
-								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0);
+								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0, false);
 						}
 						return;
 					}
@@ -3751,7 +3772,7 @@ protocol_bypass:
 			else {
 				size_t received_bytes = recv_bufsize - payload_offset; //use the unexpanded size to show real BW
 				rist_calculate_bitrate(received_bytes, &p->bw);
-				rist_receiver_recv_data(p, seq, flow_id, source_time, now, &payload, retry, payload_type, received_bytes, ts_null_bytes);
+				rist_receiver_recv_data(p, seq, flow_id, source_time, now, &payload, retry, payload_type, received_bytes, ts_null_bytes, true);
 			}
 			break;
 		case RIST_PAYLOAD_TYPE_EAPOL:
