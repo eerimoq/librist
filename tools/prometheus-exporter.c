@@ -52,7 +52,15 @@ struct rist_prometheus_client_flow_stats {
 		double rist_client_flow_reordered_packets;
 		double rist_client_flow_recovered_packets;
 		double rist_client_flow_recovered_one_retry_packets;
+		double rist_client_flow_recovered_two_nacks_packets;
+		double rist_client_flow_recovered_three_nacks_packets;
+		double rist_client_flow_recovered_four_nacks_packets;
+		double rist_client_flow_recovered_more_nacks_packets;
 		double rist_client_flow_lost_packets;
+		double rist_client_flow_retries_packets;
+		double rist_client_flow_dropped_late_packets;
+		double rist_client_flow_dropped_full_packets;
+		double rist_client_flow_duplicate_packets;
 	} counters;
 
 	struct {
@@ -69,7 +77,15 @@ struct rist_prometheus_client_flow_stats {
 		double rist_client_flow_reordered_packets;
 		double rist_client_flow_recovered_packets;
 		double rist_client_flow_recovered_one_retry_packets;
+		double rist_client_flow_recovered_two_nacks_packets;
+		double rist_client_flow_recovered_three_nacks_packets;
+		double rist_client_flow_recovered_four_nacks_packets;
+		double rist_client_flow_recovered_more_nacks_packets;
 		double rist_client_flow_lost_packets;
+		double rist_client_flow_retries_packets;
+		double rist_client_flow_dropped_late_packets;
+		double rist_client_flow_dropped_full_packets;
+		double rist_client_flow_duplicate_packets;
 		double rist_client_flow_min_iat_seconds;
 		double rist_client_flow_cur_iat_seconds;
 		double rist_client_flow_max_iat_seconds;
@@ -283,7 +299,15 @@ static int rist_prometheus_format_client_flow_stats(struct rist_prometheus_stats
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_reordered_packets, "Total number of reordered packets", "packets")
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_packets, "Total number of recovered packets", "packets")
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_one_retry_packets, "Total number of recovered after one retry packets", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_two_nacks_packets, "Total number of packets recovered after two nacks", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_three_nacks_packets, "Total number of packets recovered after three nacks", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_four_nacks_packets, "Total number of packets recovered after four nacks", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_more_nacks_packets, "Total number of packets recovered after more than four nacks", "packets")
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_lost_packets, "Total number of lost packets", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_retries_packets, "Total number of retransmissions requested (nacks queued)", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_dropped_late_packets, "Total number of packets dropped for arriving too late", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_dropped_full_packets, "Total number of packets dropped because the buffer was full", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_duplicate_packets, "Total number of duplicate packets received", "packets")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_min_iat_seconds, "Minimum inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_cur_iat_seconds, "Current inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_max_iat_seconds, "Maximum inter arrival time in seconds", "seconds")
@@ -376,6 +400,13 @@ static int rist_prometheus_format_sender_peer_info(struct rist_prometheus_stats 
 
 static void rist_prometheus_cleanup_stale_locked(struct rist_prometheus_stats *ctx, uint64_t now);
 
+/* Read a numeric JSON field, returning 0 when it is absent or not a number.
+ * Used for stats fields that only exist in newer schema versions. */
+static double rist_json_num(const cJSON *obj, const char *key) {
+	const cJSON *it = cJSON_GetObjectItem(obj, key);
+	return cJSON_IsNumber(it) ? it->valuedouble : 0;
+}
+
 void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, const struct rist_stats *stats_container, uint64_t now, uint64_t receiver_id) {
 
 	const struct rist_stats_receiver_flow *stats = &stats_container->stats.receiver_flow;
@@ -424,10 +455,20 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	double bitrate_rejected = 0;
 	double bitrate_ts_nulls = 0;
 	double bitrate_payload = 0;
+	double retries = 0, dropped_late = 0, dropped_full = 0, duplicates = 0;
+	double recovered_two = 0, recovered_three = 0, recovered_four = 0, recovered_more = 0;
 	if (stats_container->version > 0) {
 		bitrate_rejected = cJSON_GetObjectItem(flowstats,"bitrate_rejected")->valuedouble;
 		bitrate_ts_nulls = cJSON_GetObjectItem(flowstats,"bitrate_ts_nulls")->valuedouble;
 		bitrate_payload = cJSON_GetObjectItem(flowstats,"bitrate_payload")->valuedouble;
+		retries = rist_json_num(flowstats, "retries");
+		dropped_late = rist_json_num(flowstats, "dropped_late");
+		dropped_full = rist_json_num(flowstats, "dropped_full");
+		duplicates = rist_json_num(flowstats, "duplicates");
+		recovered_two = rist_json_num(flowstats, "recovered_two_nacks");
+		recovered_three = rist_json_num(flowstats, "recovered_three_nacks");
+		recovered_four = rist_json_num(flowstats, "recovered_four_nacks");
+		recovered_more = rist_json_num(flowstats, "recovered_more_nacks");
 	}
 	cJSON_Delete(receiverstats);
 
@@ -447,7 +488,15 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	s->container[s->container_offset].rist_client_flow_reordered_packets = s->counters.rist_client_flow_reordered_packets += stats->reordered;
 	s->container[s->container_offset].rist_client_flow_recovered_packets = s->counters.rist_client_flow_recovered_packets += stats->recovered;
 	s->container[s->container_offset].rist_client_flow_recovered_one_retry_packets = s->counters.rist_client_flow_recovered_one_retry_packets += stats->recovered_one_retry;
+	s->container[s->container_offset].rist_client_flow_recovered_two_nacks_packets = s->counters.rist_client_flow_recovered_two_nacks_packets += recovered_two;
+	s->container[s->container_offset].rist_client_flow_recovered_three_nacks_packets = s->counters.rist_client_flow_recovered_three_nacks_packets += recovered_three;
+	s->container[s->container_offset].rist_client_flow_recovered_four_nacks_packets = s->counters.rist_client_flow_recovered_four_nacks_packets += recovered_four;
+	s->container[s->container_offset].rist_client_flow_recovered_more_nacks_packets = s->counters.rist_client_flow_recovered_more_nacks_packets += recovered_more;
 	s->container[s->container_offset].rist_client_flow_lost_packets = s->counters.rist_client_flow_lost_packets += stats->lost;
+	s->container[s->container_offset].rist_client_flow_retries_packets = s->counters.rist_client_flow_retries_packets += retries;
+	s->container[s->container_offset].rist_client_flow_dropped_late_packets = s->counters.rist_client_flow_dropped_late_packets += dropped_late;
+	s->container[s->container_offset].rist_client_flow_dropped_full_packets = s->counters.rist_client_flow_dropped_full_packets += dropped_full;
+	s->container[s->container_offset].rist_client_flow_duplicate_packets = s->counters.rist_client_flow_duplicate_packets += duplicates;
 	s->container[s->container_offset].rist_client_flow_min_iat_seconds = ((double)1 / (double)1000000) * stats->min_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_cur_iat_seconds = ((double)1 / (double)1000000) * stats->cur_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_max_iat_seconds = ((double)1 / (double)1000000) * stats->max_inter_packet_spacing;
