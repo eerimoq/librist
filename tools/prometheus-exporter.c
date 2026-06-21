@@ -52,7 +52,15 @@ struct rist_prometheus_client_flow_stats {
 		double rist_client_flow_reordered_packets;
 		double rist_client_flow_recovered_packets;
 		double rist_client_flow_recovered_one_retry_packets;
+		double rist_client_flow_recovered_two_nacks_packets;
+		double rist_client_flow_recovered_three_nacks_packets;
+		double rist_client_flow_recovered_four_nacks_packets;
+		double rist_client_flow_recovered_more_nacks_packets;
 		double rist_client_flow_lost_packets;
+		double rist_client_flow_retries_packets;
+		double rist_client_flow_dropped_late_packets;
+		double rist_client_flow_dropped_full_packets;
+		double rist_client_flow_duplicate_packets;
 	} counters;
 
 	struct {
@@ -69,7 +77,15 @@ struct rist_prometheus_client_flow_stats {
 		double rist_client_flow_reordered_packets;
 		double rist_client_flow_recovered_packets;
 		double rist_client_flow_recovered_one_retry_packets;
+		double rist_client_flow_recovered_two_nacks_packets;
+		double rist_client_flow_recovered_three_nacks_packets;
+		double rist_client_flow_recovered_four_nacks_packets;
+		double rist_client_flow_recovered_more_nacks_packets;
 		double rist_client_flow_lost_packets;
+		double rist_client_flow_retries_packets;
+		double rist_client_flow_dropped_late_packets;
+		double rist_client_flow_dropped_full_packets;
+		double rist_client_flow_duplicate_packets;
 		double rist_client_flow_min_iat_seconds;
 		double rist_client_flow_cur_iat_seconds;
 		double rist_client_flow_max_iat_seconds;
@@ -81,6 +97,11 @@ struct rist_prometheus_client_flow_stats {
 	int container_count;
 	int container_offset;
 	uint32_t flowid;
+	/* context profile (enum rist_profile), on-wire seq width (16/32), and
+	 * whether Advanced framing is active, for the rist_client_flow_info series. */
+	uint8_t profile;
+	uint8_t seq_bits;
+	uint8_t advanced_active;
 	char cname[RIST_MAX_STRING_LONG];
 };
 
@@ -112,6 +133,11 @@ struct rist_prometheus_sender_peer_stats {
 	} container[16];
 	int container_count;
 	int container_offset;
+
+	/* context profile (enum rist_profile) and whether Advanced framing is
+	 * currently active toward this peer, for the rist_sender_peer_info series. */
+	uint8_t profile;
+	uint8_t advanced_active;
 
 	char cname[RIST_MAX_STRING_SHORT];
 	char *url;
@@ -175,6 +201,17 @@ uint64_t get_timestamp(void) {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	return tv.tv_sec;
+}
+
+/* Maps enum rist_profile to a label string for the *_info series. Kept local
+ * to the exporter so it does not depend on a library-internal symbol. */
+static const char *prom_profile_name(uint8_t profile) {
+	switch (profile) {
+	case 0:  return "simple";
+	case 1:  return "main";
+	case 2:  return "advanced";
+	default: return "unknown";
+	}
 }
 
 #define str(s) #s
@@ -262,7 +299,15 @@ static int rist_prometheus_format_client_flow_stats(struct rist_prometheus_stats
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_reordered_packets, "Total number of reordered packets", "packets")
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_packets, "Total number of recovered packets", "packets")
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_one_retry_packets, "Total number of recovered after one retry packets", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_two_nacks_packets, "Total number of packets recovered after two nacks", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_three_nacks_packets, "Total number of packets recovered after three nacks", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_four_nacks_packets, "Total number of packets recovered after four nacks", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_recovered_more_nacks_packets, "Total number of packets recovered after more than four nacks", "packets")
 	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_lost_packets, "Total number of lost packets", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_retries_packets, "Total number of retransmissions requested (nacks queued)", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_dropped_late_packets, "Total number of packets dropped for arriving too late", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_dropped_full_packets, "Total number of packets dropped because the buffer was full", "packets")
+	PROMETHEUS_COUNTER_PRINT_CLIENT(rist_client_flow_duplicate_packets, "Total number of duplicate packets received", "packets")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_min_iat_seconds, "Minimum inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_cur_iat_seconds, "Current inter arrival time in seconds", "seconds")
 	PROMETHEUS_GAUGE_PRINT_CLIENT(rist_client_flow_max_iat_seconds, "Maximum inter arrival time in seconds", "seconds")
@@ -304,7 +349,63 @@ static int rist_prometheus_format_receiver_peer_stats(struct rist_prometheus_sta
 	return offset;
 }
 
+/* Info series: constant value 1 carrying the flow profile, seq width, and
+ * advanced_active as labels, so a scrape can identify Advanced flows without
+ * changing the label set of the existing series. s->tags ends in '}', so
+ * reprint it without the trailing brace and append the extra labels. */
+static int rist_prometheus_format_client_flow_info(struct rist_prometheus_stats *ctx, char *out, int out_size) {
+	if (ctx->client_cnt == 0)
+		return 0;
+	int offset = 0;
+	int remaining = out_size;
+	offset += snprintf(out + offset * (out != NULL), remaining,
+		PROMETHEUS_GAUGE(rist_client_flow_info, "Flow metadata; value is always 1, see profile, seq_bits and advanced_active labels", "info"));
+	remaining = MAX((out_size - offset), 0);
+	for (size_t c = 0; c < ctx->client_cnt; c++) {
+		struct rist_prometheus_client_flow_stats *s = ctx->clients[c];
+		if (s->container_count == 0)
+			continue;
+		size_t tlen = strlen(s->tags);
+		offset += snprintf(out + offset * (out != NULL), remaining,
+			"rist_client_flow_info%.*s,profile=\"%s\",seq_bits=\"%u\",advanced_active=\"%u\"} 1\n",
+			(int)(tlen > 0 ? tlen - 1 : 0), s->tags,
+			prom_profile_name(s->profile), (unsigned)s->seq_bits,
+			(unsigned)(s->advanced_active ? 1 : 0));
+		remaining = MAX((out_size - offset), 0);
+	}
+	return offset;
+}
+
+static int rist_prometheus_format_sender_peer_info(struct rist_prometheus_stats *ctx, char *out, int out_size) {
+	if (ctx->sender_peer_cnt == 0)
+		return 0;
+	int offset = 0;
+	int remaining = out_size;
+	offset += snprintf(out + offset * (out != NULL), remaining,
+		PROMETHEUS_GAUGE(rist_sender_peer_info, "Sender peer metadata; value is always 1, see profile and advanced_active labels", "info"));
+	remaining = MAX((out_size - offset), 0);
+	for (size_t c = 0; c < ctx->sender_peer_cnt; c++) {
+		struct rist_prometheus_sender_peer_stats *s = ctx->sender_peers[c];
+		if (s->container_count == 0 || s->tags == NULL)
+			continue;
+		size_t tlen = strlen(s->tags);
+		offset += snprintf(out + offset * (out != NULL), remaining,
+			"rist_sender_peer_info%.*s,profile=\"%s\",advanced_active=\"%u\"} 1\n",
+			(int)(tlen > 0 ? tlen - 1 : 0), s->tags,
+			prom_profile_name(s->profile), (unsigned)(s->advanced_active ? 1 : 0));
+		remaining = MAX((out_size - offset), 0);
+	}
+	return offset;
+}
+
 static void rist_prometheus_cleanup_stale_locked(struct rist_prometheus_stats *ctx, uint64_t now);
+
+/* Read a numeric JSON field, returning 0 when it is absent or not a number.
+ * Used for stats fields that only exist in newer schema versions. */
+static double rist_json_num(const cJSON *obj, const char *key) {
+	const cJSON *it = cJSON_GetObjectItem(obj, key);
+	return cJSON_IsNumber(it) ? it->valuedouble : 0;
+}
 
 void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, const struct rist_stats *stats_container, uint64_t now, uint64_t receiver_id) {
 
@@ -354,12 +455,26 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	double bitrate_rejected = 0;
 	double bitrate_ts_nulls = 0;
 	double bitrate_payload = 0;
+	double retries = 0, dropped_late = 0, dropped_full = 0, duplicates = 0;
+	double recovered_two = 0, recovered_three = 0, recovered_four = 0, recovered_more = 0;
 	if (stats_container->version > 0) {
 		bitrate_rejected = cJSON_GetObjectItem(flowstats,"bitrate_rejected")->valuedouble;
 		bitrate_ts_nulls = cJSON_GetObjectItem(flowstats,"bitrate_ts_nulls")->valuedouble;
 		bitrate_payload = cJSON_GetObjectItem(flowstats,"bitrate_payload")->valuedouble;
+		retries = rist_json_num(flowstats, "retries");
+		dropped_late = rist_json_num(flowstats, "dropped_late");
+		dropped_full = rist_json_num(flowstats, "dropped_full");
+		duplicates = rist_json_num(flowstats, "duplicates");
+		recovered_two = rist_json_num(flowstats, "recovered_two_nacks");
+		recovered_three = rist_json_num(flowstats, "recovered_three_nacks");
+		recovered_four = rist_json_num(flowstats, "recovered_four_nacks");
+		recovered_more = rist_json_num(flowstats, "recovered_more_nacks");
 	}
 	cJSON_Delete(receiverstats);
+
+	s->profile = stats->profile;
+	s->seq_bits = stats->seq_bits;
+	s->advanced_active = stats->advanced_active;
 
 	s->container[s->container_offset].rist_client_flow_peers = stats->peer_count;
 	s->container[s->container_offset].rist_client_flow_bandwidth_bps = stats->bandwidth;
@@ -373,7 +488,15 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	s->container[s->container_offset].rist_client_flow_reordered_packets = s->counters.rist_client_flow_reordered_packets += stats->reordered;
 	s->container[s->container_offset].rist_client_flow_recovered_packets = s->counters.rist_client_flow_recovered_packets += stats->recovered;
 	s->container[s->container_offset].rist_client_flow_recovered_one_retry_packets = s->counters.rist_client_flow_recovered_one_retry_packets += stats->recovered_one_retry;
+	s->container[s->container_offset].rist_client_flow_recovered_two_nacks_packets = s->counters.rist_client_flow_recovered_two_nacks_packets += recovered_two;
+	s->container[s->container_offset].rist_client_flow_recovered_three_nacks_packets = s->counters.rist_client_flow_recovered_three_nacks_packets += recovered_three;
+	s->container[s->container_offset].rist_client_flow_recovered_four_nacks_packets = s->counters.rist_client_flow_recovered_four_nacks_packets += recovered_four;
+	s->container[s->container_offset].rist_client_flow_recovered_more_nacks_packets = s->counters.rist_client_flow_recovered_more_nacks_packets += recovered_more;
 	s->container[s->container_offset].rist_client_flow_lost_packets = s->counters.rist_client_flow_lost_packets += stats->lost;
+	s->container[s->container_offset].rist_client_flow_retries_packets = s->counters.rist_client_flow_retries_packets += retries;
+	s->container[s->container_offset].rist_client_flow_dropped_late_packets = s->counters.rist_client_flow_dropped_late_packets += dropped_late;
+	s->container[s->container_offset].rist_client_flow_dropped_full_packets = s->counters.rist_client_flow_dropped_full_packets += dropped_full;
+	s->container[s->container_offset].rist_client_flow_duplicate_packets = s->counters.rist_client_flow_duplicate_packets += duplicates;
 	s->container[s->container_offset].rist_client_flow_min_iat_seconds = ((double)1 / (double)1000000) * stats->min_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_cur_iat_seconds = ((double)1 / (double)1000000) * stats->cur_inter_packet_spacing;
 	s->container[s->container_offset].rist_client_flow_max_iat_seconds = ((double)1 / (double)1000000) * stats->max_inter_packet_spacing;
@@ -543,6 +666,12 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 						ts_nulls_bandwidth = ts_nulls_bandwidth_item->valuedouble;
 					}
 				}
+				cJSON *profile_item = cJSON_GetObjectItem(peer, "profile");
+				if (cJSON_IsNumber(profile_item))
+					s->profile = (uint8_t)profile_item->valueint;
+				cJSON *adv_item = cJSON_GetObjectItem(peer, "advanced_active");
+				if (cJSON_IsBool(adv_item))
+					s->advanced_active = cJSON_IsTrue(adv_item) ? 1 : 0;
 				break;
 			}
 		}
@@ -758,6 +887,8 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	}
 	req_size += rist_prometheus_format_sender_peer_stats(ctx, NULL, 0);
 	req_size += rist_prometheus_format_receiver_peer_stats(ctx, NULL, 0);
+	req_size += rist_prometheus_format_client_flow_info(ctx, NULL, 0);
+	req_size += rist_prometheus_format_sender_peer_info(ctx, NULL, 0);
 	req_size += sizeof(PROMETHEUS_EOF) - 1;
 
 	if ((size_t)(req_size+1) > ctx->format_buf_len) {
@@ -768,6 +899,8 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 
 	size += rist_prometheus_format_sender_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
 	size += rist_prometheus_format_receiver_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
+	size += rist_prometheus_format_client_flow_info(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
+	size += rist_prometheus_format_sender_peer_info(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
 	size += snprintf(&ctx->format_buf[size], ctx->format_buf_len - size, "%s", PROMETHEUS_EOF);
 	/* Multi-point mode accumulates samples between scrapes and resets
 	 * after each one.  Single-stat-point mode keeps the latest sample

@@ -860,7 +860,11 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 	if (RIST_UNLIKELY(f->receiver_queue[idx])) {
 		// TODO: record stats
 		struct rist_buffer *b = f->receiver_queue[idx];
-		if (b->source_time == source_time) {
+		/* Match on seq: the slot index is derived from the sequence number,
+		 * and source_time is the arrival time on the Advanced path, so it
+		 * cannot identify a genuine duplicate. A different seq in this slot
+		 * is a stale entry from an earlier ring cycle and is replaced below. */
+		if (b->seq == seq) {
 			rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Dupe! %"PRIu32"/%zu\n", seq, idx);
 			pthread_mutex_lock(&(get_cctx(peer)->stats_lock));
 			f->stats_instant.dupe++;
@@ -1169,7 +1173,7 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 						size_t partner_idx = (output_idx + 1) & (f->receiver_queue_max - 1);
 						struct rist_buffer *b2 = f->receiver_queue[partner_idx];
 						if (b2 && b2->type == RIST_PAYLOAD_TYPE_DATA_RAW &&
-						    b2->seq == ((b->seq + 1) & UINT16_MAX) &&
+						    b2->seq == rist_seq_next(b->seq, f->short_seq) &&
 						    b2->source_time == b->source_time) {
 							size_t combined_len = b->size + b2->size;
 							uint8_t *combined = malloc(RIST_MAX_PAYLOAD_OFFSET + combined_len);
@@ -3167,9 +3171,14 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 								.src_port = adv_src_port,
 								.dst_port = adv_dst_port,
 							};
+							/* Pass the delivered payload size (adv_data_len), not
+							 * the full datagram, so received_bytes and bitrate
+							 * match the Main path's payload-only accounting.
+							 * ts_null_bytes is 0: the Advanced receive path does
+							 * no ts-null reinsertion. */
 							rist_receiver_recv_data(p, adv_parsed.seq, adv_flow_id,
 								adv_source_time, now, &adv_payload, retry,
-								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0, false);
+								RIST_PAYLOAD_TYPE_DATA_RAW, adv_data_len, 0, false);
 						}
 						return;
 					}

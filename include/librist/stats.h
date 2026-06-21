@@ -36,6 +36,12 @@ struct rist_stats_sender_peer
 	uint64_t sent_bytes;
 	/* total bytes retransmitted */
 	uint64_t retransmitted_bytes;
+	/* context profile (enum rist_profile: 0 simple, 1 main, 2 advanced) */
+	uint8_t profile;
+	/* Non-zero when Advanced framing is active on the wire. An Advanced
+	 * context uses Main framing until the peer advertises Advanced support
+	 * (TR-06-3 Section 9), so profile alone does not imply Advanced framing. */
+	uint8_t advanced_active;
 };
 
 struct rist_stats_receiver_peer
@@ -102,6 +108,15 @@ struct rist_stats_receiver_flow
 	uint64_t avg_buffer_time;
 	/* total data bytes received (payload only, excluding headers) */
 	uint64_t received_bytes;
+	/* context profile (enum rist_profile: 0 simple, 1 main, 2 advanced) */
+	uint8_t profile;
+	/* on-wire sequence-number width: 16 (Simple/Main framing) or 32
+	 * (Advanced framing). A flow reads 16 until the source upgrades framing. */
+	uint8_t seq_bits;
+	/* non-zero when Advanced framing is active on this flow (Advanced context
+	 * on 32-bit framing); reads 0 when an Advanced context stays on Main
+	 * framing and for Main/Simple contexts. */
+	uint8_t advanced_active;
 };
 
 enum rist_stats_type
@@ -110,7 +125,7 @@ enum rist_stats_type
 	RIST_STATS_RECEIVER_FLOW
 };
 
-#define RIST_STATS_VERSION (2)
+#define RIST_STATS_VERSION (3)
 #define RIST_SENDER_STATS_VERSION (0)
 
 struct rist_stats
