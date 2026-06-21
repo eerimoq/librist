@@ -860,7 +860,11 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 	if (RIST_UNLIKELY(f->receiver_queue[idx])) {
 		// TODO: record stats
 		struct rist_buffer *b = f->receiver_queue[idx];
-		if (b->source_time == source_time) {
+		/* Match on seq: the slot index is derived from the sequence number,
+		 * and source_time is the arrival time on the Advanced path, so it
+		 * cannot identify a genuine duplicate. A different seq in this slot
+		 * is a stale entry from an earlier ring cycle and is replaced below. */
+		if (b->seq == seq) {
 			rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Dupe! %"PRIu32"/%zu\n", seq, idx);
 			pthread_mutex_lock(&(get_cctx(peer)->stats_lock));
 			f->stats_instant.dupe++;
