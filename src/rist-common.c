@@ -3167,9 +3167,14 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 								.src_port = adv_src_port,
 								.dst_port = adv_dst_port,
 							};
+							/* Pass the delivered payload size (adv_data_len), not
+							 * the full datagram, so received_bytes and bitrate
+							 * match the Main path's payload-only accounting.
+							 * ts_null_bytes is 0: the Advanced receive path does
+							 * no ts-null reinsertion. */
 							rist_receiver_recv_data(p, adv_parsed.seq, adv_flow_id,
 								adv_source_time, now, &adv_payload, retry,
-								RIST_PAYLOAD_TYPE_DATA_RAW, recv_bufsize, 0, false);
+								RIST_PAYLOAD_TYPE_DATA_RAW, adv_data_len, 0, false);
 						}
 						return;
 					}
