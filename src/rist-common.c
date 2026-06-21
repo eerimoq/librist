@@ -1173,7 +1173,7 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 						size_t partner_idx = (output_idx + 1) & (f->receiver_queue_max - 1);
 						struct rist_buffer *b2 = f->receiver_queue[partner_idx];
 						if (b2 && b2->type == RIST_PAYLOAD_TYPE_DATA_RAW &&
-						    b2->seq == ((b->seq + 1) & UINT16_MAX) &&
+						    b2->seq == rist_seq_next(b->seq, f->short_seq) &&
 						    b2->source_time == b->source_time) {
 							size_t combined_len = b->size + b2->size;
 							uint8_t *combined = malloc(RIST_MAX_PAYLOAD_OFFSET + combined_len);
