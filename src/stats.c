@@ -15,12 +15,22 @@
 #include "cjson/cJSON.h"
 
 /* Bump on any incompatible shape change to the stats JSON payloads. */
-#define RIST_STATS_JSON_SCHEMA_VERSION 3
+#define RIST_STATS_JSON_SCHEMA_VERSION 4
 
 static double round_two_digits(double number)
 {
 	long new_number = (long)(number * 100);
 	return (double)(new_number) / 100;
+}
+
+static const char *rist_profile_name(int profile)
+{
+	switch (profile) {
+	case RIST_PROFILE_SIMPLE:   return "simple";
+	case RIST_PROFILE_MAIN:     return "main";
+	case RIST_PROFILE_ADVANCED: return "advanced";
+	default:                    return "unknown";
+	}
 }
 
 void rist_sender_flow_statistics(struct rist_sender *ctx)
@@ -112,6 +122,9 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	cJSON_AddNumberToObject(peer_obj, "id", peer->adv_peer_id);
 	cJSON_AddStringToObject(peer_obj, "cname", peer->receiver_name);
 	cJSON_AddStringToObject(peer_obj, "type", peer->is_data ? "data" : "rtcp");
+	cJSON_AddNumberToObject(peer_obj, "profile", cctx->profile);
+	cJSON_AddStringToObject(peer_obj, "profile_name", rist_profile_name(cctx->profile));
+	cJSON_AddBoolToObject(peer_obj, "advanced_active", peer->is_advanced ? 1 : 0);
 	if (peer->miface[0])
 		cJSON_AddStringToObject(peer_obj, "miface", peer->miface);
 	cJSON *json_stats = cJSON_AddObjectToObject(peer_obj, "stats");
@@ -157,6 +170,8 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	stats_container->stats.sender_peer.rtt = avg_rtt / RIST_CLOCK;
 	stats_container->stats.sender_peer.sent_bytes = peer->stats_sender_instant.sent_bytes;
 	stats_container->stats.sender_peer.retransmitted_bytes = peer->stats_sender_instant.retransmitted_bytes;
+	stats_container->stats.sender_peer.profile = (uint8_t)cctx->profile;
+	stats_container->stats.sender_peer.advanced_active = peer->is_advanced ? 1 : 0;
 
 	if (cctx->stats_callback != NULL)
 		cctx->stats_callback(cctx->stats_callback_argument, stats_container);
@@ -199,6 +214,11 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	cJSON *flow_obj = cJSON_AddObjectToObject(stats_obj, "flowinstant");
 	cJSON_AddNumberToObject(flow_obj, "flow_id", flow->flow_id);
 	cJSON_AddNumberToObject(flow_obj, "dead",  flow->dead);
+	cJSON_AddNumberToObject(flow_obj, "profile", ctx->common.profile);
+	cJSON_AddStringToObject(flow_obj, "profile_name", rist_profile_name(ctx->common.profile));
+	cJSON_AddNumberToObject(flow_obj, "seq_bits", flow->short_seq ? 16 : 32);
+	cJSON_AddBoolToObject(flow_obj, "advanced_active",
+		(ctx->common.profile >= RIST_PROFILE_ADVANCED && !flow->short_seq) ? 1 : 0);
 	cJSON *json_stats = cJSON_AddObjectToObject(flow_obj, "stats");
 	cJSON *peers = cJSON_AddArrayToObject(flow_obj, "peers");
 	uint32_t flow_rtt = 0;
@@ -372,6 +392,10 @@ void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *
 	stats_container->stats.receiver_flow.max_inter_packet_spacing = flow->stats_instant.max_ips;
 	stats_container->stats.receiver_flow.rtt = flow->peer_lst_len ? (flow_rtt / flow->peer_lst_len)/RIST_CLOCK : 0;
 	stats_container->stats.receiver_flow.avg_buffer_time = avg_buffer_duration;
+	stats_container->stats.receiver_flow.profile = (uint8_t)ctx->common.profile;
+	stats_container->stats.receiver_flow.seq_bits = flow->short_seq ? 16 : 32;
+	stats_container->stats.receiver_flow.advanced_active =
+		(ctx->common.profile >= RIST_PROFILE_ADVANCED && !flow->short_seq) ? 1 : 0;
 
 	/* CALLBACK CALL */
 	if (ctx->common.stats_callback != NULL)

@@ -81,6 +81,11 @@ struct rist_prometheus_client_flow_stats {
 	int container_count;
 	int container_offset;
 	uint32_t flowid;
+	/* context profile (enum rist_profile), on-wire seq width (16/32), and
+	 * whether Advanced framing is active, for the rist_client_flow_info series. */
+	uint8_t profile;
+	uint8_t seq_bits;
+	uint8_t advanced_active;
 	char cname[RIST_MAX_STRING_LONG];
 };
 
@@ -112,6 +117,11 @@ struct rist_prometheus_sender_peer_stats {
 	} container[16];
 	int container_count;
 	int container_offset;
+
+	/* context profile (enum rist_profile) and whether Advanced framing is
+	 * currently active toward this peer, for the rist_sender_peer_info series. */
+	uint8_t profile;
+	uint8_t advanced_active;
 
 	char cname[RIST_MAX_STRING_SHORT];
 	char *url;
@@ -175,6 +185,17 @@ uint64_t get_timestamp(void) {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	return tv.tv_sec;
+}
+
+/* Maps enum rist_profile to a label string for the *_info series. Kept local
+ * to the exporter so it does not depend on a library-internal symbol. */
+static const char *prom_profile_name(uint8_t profile) {
+	switch (profile) {
+	case 0:  return "simple";
+	case 1:  return "main";
+	case 2:  return "advanced";
+	default: return "unknown";
+	}
 }
 
 #define str(s) #s
@@ -304,6 +325,55 @@ static int rist_prometheus_format_receiver_peer_stats(struct rist_prometheus_sta
 	return offset;
 }
 
+/* Info series: constant value 1 carrying the flow profile, seq width, and
+ * advanced_active as labels, so a scrape can identify Advanced flows without
+ * changing the label set of the existing series. s->tags ends in '}', so
+ * reprint it without the trailing brace and append the extra labels. */
+static int rist_prometheus_format_client_flow_info(struct rist_prometheus_stats *ctx, char *out, int out_size) {
+	if (ctx->client_cnt == 0)
+		return 0;
+	int offset = 0;
+	int remaining = out_size;
+	offset += snprintf(out + offset * (out != NULL), remaining,
+		PROMETHEUS_GAUGE(rist_client_flow_info, "Flow metadata; value is always 1, see profile, seq_bits and advanced_active labels", "info"));
+	remaining = MAX((out_size - offset), 0);
+	for (size_t c = 0; c < ctx->client_cnt; c++) {
+		struct rist_prometheus_client_flow_stats *s = ctx->clients[c];
+		if (s->container_count == 0)
+			continue;
+		size_t tlen = strlen(s->tags);
+		offset += snprintf(out + offset * (out != NULL), remaining,
+			"rist_client_flow_info%.*s,profile=\"%s\",seq_bits=\"%u\",advanced_active=\"%u\"} 1\n",
+			(int)(tlen > 0 ? tlen - 1 : 0), s->tags,
+			prom_profile_name(s->profile), (unsigned)s->seq_bits,
+			(unsigned)(s->advanced_active ? 1 : 0));
+		remaining = MAX((out_size - offset), 0);
+	}
+	return offset;
+}
+
+static int rist_prometheus_format_sender_peer_info(struct rist_prometheus_stats *ctx, char *out, int out_size) {
+	if (ctx->sender_peer_cnt == 0)
+		return 0;
+	int offset = 0;
+	int remaining = out_size;
+	offset += snprintf(out + offset * (out != NULL), remaining,
+		PROMETHEUS_GAUGE(rist_sender_peer_info, "Sender peer metadata; value is always 1, see profile and advanced_active labels", "info"));
+	remaining = MAX((out_size - offset), 0);
+	for (size_t c = 0; c < ctx->sender_peer_cnt; c++) {
+		struct rist_prometheus_sender_peer_stats *s = ctx->sender_peers[c];
+		if (s->container_count == 0 || s->tags == NULL)
+			continue;
+		size_t tlen = strlen(s->tags);
+		offset += snprintf(out + offset * (out != NULL), remaining,
+			"rist_sender_peer_info%.*s,profile=\"%s\",advanced_active=\"%u\"} 1\n",
+			(int)(tlen > 0 ? tlen - 1 : 0), s->tags,
+			prom_profile_name(s->profile), (unsigned)(s->advanced_active ? 1 : 0));
+		remaining = MAX((out_size - offset), 0);
+	}
+	return offset;
+}
+
 static void rist_prometheus_cleanup_stale_locked(struct rist_prometheus_stats *ctx, uint64_t now);
 
 void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, const struct rist_stats *stats_container, uint64_t now, uint64_t receiver_id) {
@@ -360,6 +430,10 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 		bitrate_payload = cJSON_GetObjectItem(flowstats,"bitrate_payload")->valuedouble;
 	}
 	cJSON_Delete(receiverstats);
+
+	s->profile = stats->profile;
+	s->seq_bits = stats->seq_bits;
+	s->advanced_active = stats->advanced_active;
 
 	s->container[s->container_offset].rist_client_flow_peers = stats->peer_count;
 	s->container[s->container_offset].rist_client_flow_bandwidth_bps = stats->bandwidth;
@@ -543,6 +617,12 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 						ts_nulls_bandwidth = ts_nulls_bandwidth_item->valuedouble;
 					}
 				}
+				cJSON *profile_item = cJSON_GetObjectItem(peer, "profile");
+				if (cJSON_IsNumber(profile_item))
+					s->profile = (uint8_t)profile_item->valueint;
+				cJSON *adv_item = cJSON_GetObjectItem(peer, "advanced_active");
+				if (cJSON_IsBool(adv_item))
+					s->advanced_active = cJSON_IsTrue(adv_item) ? 1 : 0;
 				break;
 			}
 		}
@@ -758,6 +838,8 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 	}
 	req_size += rist_prometheus_format_sender_peer_stats(ctx, NULL, 0);
 	req_size += rist_prometheus_format_receiver_peer_stats(ctx, NULL, 0);
+	req_size += rist_prometheus_format_client_flow_info(ctx, NULL, 0);
+	req_size += rist_prometheus_format_sender_peer_info(ctx, NULL, 0);
 	req_size += sizeof(PROMETHEUS_EOF) - 1;
 
 	if ((size_t)(req_size+1) > ctx->format_buf_len) {
@@ -768,6 +850,8 @@ static int rist_prometheus_stats_format(struct rist_prometheus_stats *ctx) {
 
 	size += rist_prometheus_format_sender_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
 	size += rist_prometheus_format_receiver_peer_stats(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
+	size += rist_prometheus_format_client_flow_info(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
+	size += rist_prometheus_format_sender_peer_info(ctx, &ctx->format_buf[size], (int)ctx->format_buf_len - size);
 	size += snprintf(&ctx->format_buf[size], ctx->format_buf_len - size, "%s", PROMETHEUS_EOF);
 	/* Multi-point mode accumulates samples between scrapes and resets
 	 * after each one.  Single-stat-point mode keeps the latest sample
