@@ -601,21 +601,28 @@ static int receiver_insert_queue_packet(struct rist_flow *f, struct rist_peer *p
 static inline void receiver_mark_missing(struct rist_flow *f, struct rist_peer *peer, uint32_t current_seq, uint64_t rtt) {
 	uint32_t counter = 1;
 	uint64_t packet_time_last = 0;
-	if (RIST_UNLIKELY(!f->receiver_queue[f->last_seq_found]))
+	/* Index the ring exactly as receiver_enqueue() does. 16-bit flows had a
+	 * sequence range equal to receiver_queue_max so a raw seq was always a
+	 * valid index, but a 32-bit (Advanced) seq can exceed receiver_queue_max
+	 * and run off the array -> OOB read of a stale/NULL slot, then a NULL
+	 * deref. */
+	size_t last_idx = f->last_seq_found & (f->receiver_queue_max - 1);
+	size_t cur_idx = current_seq & (f->receiver_queue_max - 1);
+	if (RIST_UNLIKELY(!f->receiver_queue[last_idx]))
 		if (RIST_LIKELY(!f->rtc_timing_mode))
 			packet_time_last = timestampNTP_u64();
 		else
 			packet_time_last = timestampNTP_RTC_u64();
 	else
-		packet_time_last = f->receiver_queue[f->last_seq_found]->packet_time;
+		packet_time_last = f->receiver_queue[last_idx]->packet_time;
 	uint64_t packet_time_now;
-	if (RIST_UNLIKELY(!f->receiver_queue[current_seq])) {
+	if (RIST_UNLIKELY(!f->receiver_queue[cur_idx])) {
 		if (RIST_LIKELY(!f->rtc_timing_mode))
 			packet_time_now = timestampNTP_u64();
 		else
 			packet_time_now = timestampNTP_RTC_u64();
 	} else {
-		packet_time_now = f->receiver_queue[current_seq]->packet_time;
+		packet_time_now = f->receiver_queue[cur_idx]->packet_time;
 	}
 	/* short_seq (Simple/Main) flows wrap at 16 bits; 32-bit (Advanced) flows
 	 * use the true gap so a real >64k loss is not truncated. Cap mirrors the
