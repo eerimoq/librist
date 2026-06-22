@@ -48,7 +48,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <pthread.h>
+#include "pthread-shim.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -65,7 +65,7 @@
 
 static struct rist_logging_settings *log_settings = NULL;
 
-static pthread_mutex_t tracker_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tracker_lock;
 #define MAX_TRACKED_PEERS 16
 static struct {
 	struct rist_peer *seen[MAX_TRACKED_PEERS];
@@ -130,7 +130,7 @@ static struct rist_ctx *start_receiver(const char *url, receiver_data_callback2_
 	return rx;
 }
 
-static void *sender_feed(void *arg) {
+static PTHREAD_START_FUNC(sender_feed, arg) {
 	struct rist_ctx *tx = arg;
 	uint32_t counter = 0;
 	while (sender_run) {
@@ -143,7 +143,7 @@ static void *sender_feed(void *arg) {
 		counter++;
 		usleep(20000); /* ~50 pkt/s */
 	}
-	return NULL;
+	return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -157,6 +157,7 @@ int main(int argc, char *argv[]) {
 		return 99;
 
 	memset(&tracker, 0, sizeof(tracker));
+	pthread_mutex_init(&tracker_lock, NULL);
 
 	/* sender: listener, MAIN, shared PSK, streams data. */
 	struct rist_ctx *tx = NULL;

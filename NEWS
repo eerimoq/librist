@@ -219,6 +219,10 @@ CI / Test Coverage:
     against the 2048-bit RFC 5054 group.  Added four end-to-end tests
     covering both PAD and legacy modes plus the two cross-mode failure
     cases.
+  - The issue #188 NAT/socket-rebind and multipath cname integration
+    tests now compile under MSVC: they use the Windows pthread-shim
+    (runtime mutex initialisation and PTHREAD_START_FUNC thread entry
+    points) instead of a direct <pthread.h> dependency.
 
 Tools:
   - ristsender: new --blind-send option.  Decouples the sender from

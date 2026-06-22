@@ -54,7 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <pthread.h>
+#include "pthread-shim.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -76,7 +76,7 @@ static struct {
 	struct rist_peer *seen[MAX_TRACKED_PEERS];
 	int count;
 } tracker;
-static pthread_mutex_t tracker_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tracker_lock;
 
 static int log_cb(void *arg, enum rist_log_level level, const char *msg) {
 	(void)arg;
@@ -153,6 +153,7 @@ int main(int argc, char *argv[]) {
 	         listen_port, crypto_suffix);
 
 	memset(&tracker, 0, sizeof(tracker));
+	pthread_mutex_init(&tracker_lock, NULL);
 
 	if (rist_logging_set(&log_settings, RIST_LOG_INFO, log_cb,
 	                     NULL, NULL, stderr) != 0) {
