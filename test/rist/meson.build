@@ -113,8 +113,28 @@ test_caller_socket_rebind = executable('test_caller_socket_rebind',
                                        ])
 
 
+test_oob_read = executable('test_oob_read',
+                           'test_oob_read.c',
+                           extra_sources,
+                           include_directories: inc,
+                           link_with: librist,
+                           dependencies: [
+                               threads,
+                               tools_dependencies,
+                               stdatomic_dependency
+                           ])
+
+
 ###Sender restart test (bug fix verification)
 test('Sender restart test', test_sender_restart, args: ['5'], suite: ['regression', 'sender'])
+
+###Out-of-band polling read (rist_oob_read) round-trip
+test('OOB polling read Main profile', test_oob_read,
+     args: ['1', 'rist://@127.0.0.1:8190', 'rist://127.0.0.1:8190'],
+     suite: ['regression', 'oob'], timeout: 60)
+test('OOB polling read Advanced profile', test_oob_read,
+     args: ['2', 'rist://@127.0.0.1:8192', 'rist://127.0.0.1:8192'],
+     suite: ['regression', 'oob'], timeout: 60)
 
 ###issue #188 NAT source-port rebind recovery
 test('NAT port rebind cname re-association (plaintext gate refuses)', test_nat_port_rebind,

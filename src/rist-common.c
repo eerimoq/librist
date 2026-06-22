@@ -2296,16 +2296,84 @@ static void rist_recv_oob_data(struct rist_peer *peer, struct rist_buffer *paylo
 	// TODO: if the calling app locks the thread for long, the protocol management thread will suffer
 	// either use a new thread with a fifo or write warning on documentation
 	struct rist_common_ctx *ctx = get_cctx(peer);
-	if (ctx->oob_data_enabled && ctx->oob_data_callback)
+	if (!ctx->oob_data_enabled)
+		return;
+
+	if (ctx->oob_current_peer == NULL || ctx->oob_current_peer->dead)
+		ctx->oob_current_peer = peer;
+
+	if (ctx->oob_data_callback)
 	{
 		struct rist_oob_block oob_block;
-		if (ctx->oob_current_peer == NULL || ctx->oob_current_peer->dead)
-			ctx->oob_current_peer = peer;
 		oob_block.peer = peer;
 		oob_block.payload = payload->data;
 		oob_block.payload_len = payload->size;
+		oob_block.ts_ntp = payload->source_time;
 		ctx->oob_data_callback(ctx->oob_data_callback_argument, &oob_block);
+		return;
 	}
+
+	/* No callback installed: stash the packet in the receive fifo so the
+	 * application can pull it via rist_oob_read(). */
+	pthread_rwlock_wrlock(&ctx->oob_queue_lock);
+	if ((uint16_t)(ctx->oob_rx_queue_write_index + 1) == ctx->oob_rx_queue_read_index)
+	{
+		pthread_rwlock_unlock(&ctx->oob_queue_lock);
+		rist_log_priv(ctx, RIST_LOG_WARN,
+				"oob receive queue is full, dropping packet of size %zu\n", payload->size);
+		return;
+	}
+	struct rist_buffer *b = rist_new_buffer(ctx, payload->data, payload->size,
+			RIST_PAYLOAD_TYPE_DATA_OOB, 0, payload->source_time, 0, 0);
+	if (RIST_UNLIKELY(!b))
+	{
+		pthread_rwlock_unlock(&ctx->oob_queue_lock);
+		rist_log_priv(ctx, RIST_LOG_ERROR, "Could not allocate oob receive buffer, OOM\n");
+		return;
+	}
+	b->peer = peer;
+	ctx->oob_rx_queue[ctx->oob_rx_queue_write_index] = b;
+	ctx->oob_rx_queue_write_index = (uint16_t)(ctx->oob_rx_queue_write_index + 1);
+	pthread_rwlock_unlock(&ctx->oob_queue_lock);
+}
+
+/* Pull one packet from the oob receive fifo.  The returned block is owned by
+ * the library and stays valid until the next rist_oob_dequeue_rx() call.
+ * Returns the number of packets that were available (>=1) when data is
+ * returned, 0 when the fifo is empty. */
+int rist_oob_dequeue_rx(struct rist_common_ctx *ctx, const struct rist_oob_block **oob_block)
+{
+	*oob_block = NULL;
+
+	pthread_rwlock_wrlock(&ctx->oob_queue_lock);
+
+	/* release the buffer handed out by the previous call */
+	if (ctx->oob_rx_current)
+	{
+		free_rist_buffer(ctx, ctx->oob_rx_current);
+		ctx->oob_rx_current = NULL;
+	}
+
+	if (ctx->oob_rx_queue_read_index == ctx->oob_rx_queue_write_index)
+	{
+		pthread_rwlock_unlock(&ctx->oob_queue_lock);
+		return 0;
+	}
+
+	struct rist_buffer *b = ctx->oob_rx_queue[ctx->oob_rx_queue_read_index];
+	ctx->oob_rx_queue[ctx->oob_rx_queue_read_index] = NULL;
+	ctx->oob_rx_queue_read_index = (uint16_t)(ctx->oob_rx_queue_read_index + 1);
+	int available = (uint16_t)(ctx->oob_rx_queue_write_index - ctx->oob_rx_queue_read_index) + 1;
+
+	ctx->oob_rx_current = b;
+	ctx->oob_rx_block.peer = b->peer;
+	ctx->oob_rx_block.payload = (uint8_t *)b->data + RIST_MAX_PAYLOAD_OFFSET;
+	ctx->oob_rx_block.payload_len = b->size;
+	ctx->oob_rx_block.ts_ntp = b->source_time;
+	*oob_block = &ctx->oob_rx_block;
+
+	pthread_rwlock_unlock(&ctx->oob_queue_lock);
+	return available;
 }
 
 static void rist_rtcp_handle_echo_request(struct rist_peer *peer, struct rist_rtcp_echoext *echoreq) {
@@ -4831,6 +4899,19 @@ void rist_empty_oob_queue(struct rist_common_ctx *ctx)
 		index++;
 	}
 	ctx->oob_queue_bytesize = 0;
+
+	/* drain the oob receive fifo and the last handed-out buffer */
+	while (ctx->oob_rx_queue_read_index != ctx->oob_rx_queue_write_index) {
+		struct rist_buffer *rx_buffer = ctx->oob_rx_queue[ctx->oob_rx_queue_read_index];
+		ctx->oob_rx_queue[ctx->oob_rx_queue_read_index] = NULL;
+		if (rx_buffer)
+			free_rist_buffer(ctx, rx_buffer);
+		ctx->oob_rx_queue_read_index = (uint16_t)(ctx->oob_rx_queue_read_index + 1);
+	}
+	if (ctx->oob_rx_current) {
+		free_rist_buffer(ctx, ctx->oob_rx_current);
+		ctx->oob_rx_current = NULL;
+	}
 }
 
 void rist_receiver_destroy_local(struct rist_receiver *ctx)

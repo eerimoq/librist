@@ -9,6 +9,13 @@ and TR-06-3 (Advanced Profile).
 Changes for 0.2.19:
 ---------------------------------
 
+Features:
+  - rist_oob_read() is now implemented.  When out-of-band data is enabled
+    without a callback (rist_oob_callback_set with a NULL callback), incoming
+    OOB packets are queued and can be drained by polling rist_oob_read(), as
+    the public API already documented.  The previous stub returned success
+    without writing the output pointer, which could crash a polling caller.
+
 Bug Fixes:
   - risttunnel: fix an intermittent SIGSEGV at startup caused by an
     uninitialised logging-settings pointer.  risttunnel now points log_ptr

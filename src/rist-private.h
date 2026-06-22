@@ -404,10 +404,18 @@ struct rist_common_ctx {
 	pthread_mutex_t stats_lock;
 
 	pthread_rwlock_t oob_queue_lock;
-	struct rist_buffer *oob_queue[RIST_OOB_QUEUE_BUFFERS]; /* oob queue */
+	struct rist_buffer *oob_queue[RIST_OOB_QUEUE_BUFFERS]; /* oob transmit queue */
 	size_t oob_queue_bytesize;
 	uint16_t oob_queue_read_index;
 	uint16_t oob_queue_write_index;
+
+	/* oob receive fifo: populated by the protocol thread when oob is
+	 * enabled but no callback is set, drained by rist_oob_read(). */
+	struct rist_buffer *oob_rx_queue[RIST_OOB_QUEUE_BUFFERS];
+	uint16_t oob_rx_queue_read_index;
+	uint16_t oob_rx_queue_write_index;
+	struct rist_buffer *oob_rx_current; /* backs the block handed out by the last rist_oob_read */
+	struct rist_oob_block oob_rx_block; /* borrowed view returned to the caller */
 
 	bool debug;
 	uint32_t birthtime_rtp_offset;
@@ -781,6 +789,8 @@ RIST_PRIV struct rist_peer *rist_sender_peer_insert_local(struct rist_sender *ct
 														  const struct rist_peer_config *config, bool b_rtcp);
 RIST_PRIV void rist_fsm_init_comm(struct rist_peer *peer);
 RIST_PRIV int rist_oob_enqueue(struct rist_common_ctx *ctx, struct rist_peer *peer, const void *buf, size_t len);
+
+RIST_PRIV int rist_oob_dequeue_rx(struct rist_common_ctx *ctx, const struct rist_oob_block **oob_block);
 RIST_PRIV int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile);
 RIST_PRIV void init_advanced_state(struct rist_common_ctx *ctx);
 RIST_PRIV int rist_peer_remove(struct rist_common_ctx *ctx, struct rist_peer *peer, struct rist_peer **next);

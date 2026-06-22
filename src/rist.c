@@ -707,18 +707,36 @@ int rist_sender_data_write(struct rist_ctx *rist_ctx, const struct rist_data_blo
 /* Shared OOB functions -> Tunneled IP packets within GRE */
 int rist_oob_read(struct rist_ctx *ctx, const struct rist_oob_block **oob_block)
 {
-	RIST_MARK_UNUSED(oob_block);
 	if (!ctx)
 	{
 		rist_log_priv3(RIST_LOG_ERROR, "ctx is null on rist_oob_read call!\n");
+		return -1;
+	}
+	if (!oob_block)
+	{
+		rist_log_priv3(RIST_LOG_ERROR, "oob_block is null on rist_oob_read call!\n");
 		return -1;
 	}
 	struct rist_common_ctx *cctx = rist_struct_get_common(ctx);
 	if (!cctx)
 		return -1;
 
-	rist_log_priv(cctx, RIST_LOG_ERROR, "rist_receiver_oob_read not implemented!\n");
-	return 0;
+	*oob_block = NULL;
+
+	if (!cctx->oob_data_enabled)
+	{
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+				"rist_oob_read called but oob data is not enabled; call rist_oob_callback_set first\n");
+		return -1;
+	}
+	if (cctx->oob_data_callback)
+	{
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+				"rist_oob_read cannot be used while an oob callback is installed\n");
+		return -1;
+	}
+
+	return rist_oob_dequeue_rx(cctx, oob_block);
 }
 
 int rist_oob_write(struct rist_ctx *ctx, const struct rist_oob_block *oob_block)
@@ -778,6 +796,9 @@ int rist_oob_callback_set(struct rist_ctx *ctx,
 	cctx->oob_data_callback_argument = arg;
 	cctx->oob_queue_write_index = 0;
 	cctx->oob_queue_read_index = 0;
+	cctx->oob_rx_queue_write_index = 0;
+	cctx->oob_rx_queue_read_index = 0;
+	cctx->oob_rx_current = NULL;
 
 	return 0;
 }
