@@ -15,6 +15,17 @@ Features:
     OOB packets are queued and can be drained by polling rist_oob_read(), as
     the public API already documented.  The previous stub returned success
     without writing the output pointer, which could crash a polling caller.
+  - risttunnel gains a single-port mode (-1/--single-port): a bidirectional
+    IP tunnel carried over one UDP port instead of two.  A single RIST
+    connection runs the forward direction over the RTP data_fd path
+    (ARQ-protected) and the reverse direction over the OOB channel on the
+    same socket (best-effort, no ARQ).  The caller passes only -o, the
+    listener only -b.  Because librist learns the OOB return peer only from
+    received OOB, the listener captures the connecting peer through the
+    auth/connect callback and hands it explicitly to rist_oob_write(), while
+    the caller injects inbound OOB into its TUN through an OOB receive
+    callback.  Intended for low-bandwidth, NAT-friendly control tunnels
+    where the heavy direction is forward and the reverse is light.
 
 Bug Fixes:
   - risttunnel: fix an intermittent SIGSEGV at startup caused by an
