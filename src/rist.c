@@ -237,7 +237,13 @@ void rist_receiver_data_block_free(struct rist_data_block **const block)
 
 void rist_receiver_data_block_free2(struct rist_data_block **block)
 {
+	/* free(NULL)-style no-op: *block may already be NULL on the data_fd
+	 * delivery path (free_data_block nulls it). Mirror its guard. */
+	if (block == NULL)
+		return;
 	struct rist_data_block *b = *block;
+	if (b == NULL)
+		return;
 	if (b->ref != NULL)
 		free_data_block(block);
 }
