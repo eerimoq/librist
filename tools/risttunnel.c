@@ -246,8 +246,12 @@ int main(int argc, char *argv[])
 	signal(SIGPIPE, SIG_IGN);
 #endif
 
-	/* Logging */
-	struct rist_logging_settings *log_ptr;
+	/* Logging.  Point log_ptr at the static settings like the other tools:
+	 * rist_logging_set() only allocates a new struct when *log_ptr is NULL,
+	 * otherwise it configures the pointed-to settings in place.  Leaving it
+	 * uninitialised let a garbage non-NULL value through and caused a write
+	 * to an invalid address (intermittent SIGSEGV at startup). */
+	struct rist_logging_settings *log_ptr = &logging_settings;
 	if (rist_logging_set(&log_ptr, loglevel, NULL, NULL, NULL, stderr) != 0) {
 		fprintf(stderr, "Failed to setup logging\n");
 		exitcode = 1;

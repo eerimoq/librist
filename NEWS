@@ -6,6 +6,18 @@ Recommendations TR-06-1 (Simple Profile), TR-06-2 (Main Profile),
 and TR-06-3 (Advanced Profile).
 
 
+Changes for 0.2.19:
+---------------------------------
+
+Bug Fixes:
+  - risttunnel: fix an intermittent SIGSEGV at startup caused by an
+    uninitialised logging-settings pointer.  risttunnel now points log_ptr
+    at the static logging settings like the other tools, so rist_logging_set()
+    configures them in place instead of writing through a garbage pointer.
+    As a side effect the -v loglevel now also applies to risttunnel's own
+    messages.
+
+
 Changes for 0.2.18:
 ---------------------------------
 
