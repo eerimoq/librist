@@ -40,11 +40,16 @@
 #include "librist/librist_srp.h"
 #include "rist-private.h"
 #include <inttypes.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #define LISTEN_PORT 19956
 #define LEG_A_PORT 20081
@@ -56,7 +61,7 @@
 
 static struct rist_logging_settings *log_settings = NULL;
 
-static pthread_mutex_t tracker_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tracker_lock;
 #define MAX_TRACKED_PEERS 16
 static struct {
 	struct rist_peer *seen[MAX_TRACKED_PEERS];
@@ -100,7 +105,7 @@ static int rx_data_cb(void *arg, struct rist_data_block *b) {
 	return 0;
 }
 
-static void *sender_feed(void *arg) {
+static PTHREAD_START_FUNC(sender_feed, arg) {
 	struct rist_ctx *tx = arg;
 	uint32_t counter = 0;
 	while (sender_run) {
@@ -113,7 +118,7 @@ static void *sender_feed(void *arg) {
 		counter++;
 		usleep(20000); /* ~50 pkt/s */
 	}
-	return NULL;
+	return 0;
 }
 
 static struct rist_peer *add_srp_leg(struct rist_ctx *rx, int local_port) {
@@ -139,6 +144,7 @@ int main(void) {
 	if (rist_logging_set(&log_settings, RIST_LOG_INFO, log_cb, NULL, NULL, stderr) != 0)
 		return 99;
 	memset(&tracker, 0, sizeof(tracker));
+	pthread_mutex_init(&tracker_lock, NULL);
 
 	/* sender: listener, MAIN, single-user SRP authenticator, streams. */
 	struct rist_ctx *tx = NULL;

@@ -6,10 +6,13 @@ Recommendations TR-06-1 (Simple Profile), TR-06-2 (Main Profile),
 and TR-06-3 (Advanced Profile).
 
 
-Changes for 0.2.18 (pre-release):
+Changes for 0.2.18:
 ---------------------------------
 
 ABI/API:
+  - ABI version 15:0:11 (soversion 4, binary-compatible with 0.2.15,
+    0.2.16, and 0.2.17)
+  - API version 4.12.0 (new features, backwards-compatible)
   - RIST_PEER_CONFIG_VERSION bumped from 2 to 3 (one new field:
     srp_compat_legacy).  Existing zero-initialised peer configs
     continue to work; the new field defaults to 0 (spec-compliant).
@@ -45,6 +48,11 @@ ABI/API:
   - New public macro RIST_PEER_WEIGHT_DUPLICATE (0) names the
     rist_peer_config.weight sentinel that selects packet duplication
     instead of weighted load-balancing.  Value unchanged.
+  - RIST_STATS_VERSION bumped from 2 to 3 and the JSON stats
+    schema_version from 3 to 4 (additive): rist_stats_sender_peer gains
+    profile + advanced_active, rist_stats_receiver_flow gains profile +
+    seq_bits + advanced_active.  Consumers reading only earlier fields are
+    unaffected.
 
 Features:
   - Per-peer retransmission routing: the new ?recovery-priority=<n>
@@ -79,8 +87,35 @@ Features:
     negotiates Advanced framing with an Advanced peer and falls back to
     Main framing with a Main-only peer, so existing Main deployments keep
     working.  Pass -p 1 (or profile: 1 in YAML) to force Main as before.
+  - risttunnel now defaults to RIST_DEFAULT_PROFILE like the other tools,
+    instead of remaining hardcoded to Main, completing the default-profile
+    sweep.
+  - Advanced-profile visibility in statistics: the binary stats API and the
+    JSON stats now report each flow's configured profile and, on the
+    receiver, whether Advanced framing is actually active and the sequence
+    width in use.  The Prometheus exporter adds rist_client_flow_info /
+    rist_sender_peer_info series carrying these labels, so a dashboard can
+    tell at a glance when it is monitoring an Advanced stream.
 
 Bug Fixes:
+  - Advanced profile: a sequence gap larger than 65535 is no longer
+    truncated to 16 bits, so a real >64k loss on a 32-bit flow is recovered
+    instead of being mis-detected as a tiny gap.
+  - Advanced profile: receiver_mark_missing() now masks the sequence into the
+    retransmission ring index.  A 32-bit sequence eventually exceeds the ring
+    size; the old raw index ran off the array and could crash the receiver on
+    a long-running Advanced flow.
+  - The expected-next-sequence wrap mask no longer forces the value even (it
+    masked with UINT16_MAX-1), which mis-computed every odd successor on
+    16-bit flows.
+  - Advanced byte accounting now counts delivered payload only, matching the
+    Simple/Main convention, so received-byte and bitrate stats are consistent
+    across profiles.
+  - Duplicate detection compares the sequence number rather than the source
+    timestamp, fixing false duplicate decisions on Advanced arrival-stamped
+    packets.
+  - Merge-mode pairing computes the successor sequence in a 32-bit-safe way,
+    so paired packets are matched correctly on Advanced flows.
   - Advanced Profile (TR-06-3) RTT Echo Responses inflated the measured
     round-trip time by a constant factor.  The sender will not retransmit
     a packet again within one RTT of the previous attempt, so the inflated
@@ -168,7 +203,7 @@ SRP interoperability:
     as an escape hatch while older deployments are upgraded.
   - When an SRP handshake fails, the authenticator (and the client
     on M2 mismatch) now emits a single INFO hint pointing at the
-    srp-compat=1 escape hatch.  The hint is advisory only —
+    srp-compat=1 escape hatch.  The hint is advisory only -
     the SRP-6a transcript binds M1 to the authenticator's wire-mode
     B, so there is no purely-local way to distinguish "wrong
     password" from "peer is on the other wire format" once the
@@ -184,10 +219,14 @@ CI / Test Coverage:
     against the 2048-bit RFC 5054 group.  Added four end-to-end tests
     covering both PAD and legacy modes plus the two cross-mode failure
     cases.
+  - The issue #188 NAT/socket-rebind and multipath cname integration
+    tests now compile under MSVC: they use the Windows pthread-shim
+    (runtime mutex initialisation and PTHREAD_START_FUNC thread entry
+    points) instead of a direct <pthread.h> dependency.
 
 Tools:
   - ristsender: new --blind-send option.  Decouples the sender from
-    RIST peer state — multicast input groups are joined immediately
+    RIST peer state - multicast input groups are joined immediately
     and incoming UDP data is written to the RIST context regardless
     of whether any output peer has connected.  Intended for
     fire-and-forget broadcast topologies (multicast output in
@@ -201,6 +240,10 @@ Tools:
     rist_client_flow_avg_buffer_time_seconds reporting the dynamic
     receiver buffer fill level (sourced from avg_buffer_time in
     rist_stats_receiver_flow, converted from ms to seconds).
+  - Prometheus exporter: now also exports receiver counters that were
+    previously JSON-only: retries, dropped-late, dropped-full, duplicates,
+    and the NACK-depth recovery buckets (recovered after two / three / four
+    / more NACKs).
 
 
 Changes for 0.2.17:

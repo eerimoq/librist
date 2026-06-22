@@ -17,9 +17,9 @@ cdata = configuration_data()
 #If any interfaces have been added, removed, or changed since the last update, increment current, and set revision to 0.
 #If any interfaces have been added since the last public release, then increment age.
 #If any interfaces have been removed or changed since the last public release, then set age to 0.
-librist_abi_current = 14
+librist_abi_current = 15
 librist_abi_revision = 0
-librist_abi_age = 10
+librist_abi_age = 11
 librist_soversion = librist_abi_current - librist_abi_age
 librist_version = '@0@.@1@.@2@'.format(librist_abi_current - librist_abi_age, librist_abi_age, librist_abi_revision)
 
@@ -30,7 +30,7 @@ librist_version = '@0@.@1@.@2@'.format(librist_abi_current - librist_abi_age, li
 #PATCH not used (doesn't make sense for API version, remains here for backwards compat)
 
 librist_api_version_major = 4
-librist_api_version_minor = 11
+librist_api_version_minor = 12
 librist_api_version_patch = 0
 
 librist_src_root = meson.current_source_dir()

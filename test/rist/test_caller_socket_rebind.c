@@ -37,7 +37,6 @@
 #include "librist/librist.h"
 #include "rist-private.h"
 #include <inttypes.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +44,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 static struct rist_logging_settings *log_settings = NULL;
@@ -54,7 +55,7 @@ static struct {
 	bool second_seen;
 	struct rist_peer *second_peer;
 } cb_state;
-static pthread_mutex_t cb_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t cb_lock;
 
 static int log_cb(void *arg, enum rist_log_level level, const char *msg) {
 	(void)arg;
@@ -118,6 +119,7 @@ int main(int argc, char *argv[]) {
 	const char *crypto_suffix = use_psk ? "&secret=testkey1234&aes-type=128" : "";
 	const int listen_port = use_psk ? 22001 : 22000;
 	memset(&cb_state, 0, sizeof(cb_state));
+	pthread_mutex_init(&cb_lock, NULL);
 
 	if (rist_logging_set(&log_settings, RIST_LOG_INFO, log_cb,
 	                     NULL, NULL, stderr) != 0) {
