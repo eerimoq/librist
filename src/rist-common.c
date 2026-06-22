@@ -3983,12 +3983,27 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 
 		uint8_t *payload = oob_buffer->data;
 		struct rist_peer *p = oob_buffer->peer;
+
+		/* The stashed peer may have been freed (NAT rebind / timeout) since
+		 * rist_oob_write() queued it; verify it is still live and hold
+		 * peerlist_lock across the send so it can't be freed under us. */
+		pthread_mutex_lock(&ctx->peerlist_lock);
+		bool peer_alive = false;
+		for (struct rist_peer *pp = ctx->PEERS; pp != NULL; pp = pp->next) {
+			if (pp == p) {
+				peer_alive = true;
+				break;
+			}
+		}
+		if (!peer_alive) {
+			pthread_mutex_unlock(&ctx->peerlist_lock);
+			rist_log_priv(ctx, RIST_LOG_WARN, "OOB: target peer no longer exists, dropping packet\n");
+			ctx->oob_queue_bytesize -= oob_buffer->size;
+			ctx->oob_queue_read_index++;
+			continue;
+		}
 		if (p->listening) {
-			/* Listener peer: send OOB to all alive child peers.
-			 * Hold peerlist_lock while walking the child list to
-			 * prevent a concurrent peer add/remove from freeing a
-			 * sibling_next pointer underneath us. */
-			pthread_mutex_lock(&ctx->peerlist_lock);
+			/* Listener peer: send OOB to all alive child peers. */
 			struct rist_peer *child = p->child;
 			bool sent = false;
 			while (child) {
@@ -3999,13 +4014,13 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 				}
 				child = child->sibling_next;
 			}
-			pthread_mutex_unlock(&ctx->peerlist_lock);
 			if (!sent)
 				rist_log_priv(ctx, RIST_LOG_WARN, "OOB: listener peer has no alive children, dropping\n");
 		} else {
 			rist_send_common_rtcp(p, RIST_PAYLOAD_TYPE_DATA_OOB, &payload[RIST_MAX_PAYLOAD_OFFSET],
 					oob_buffer->size, 0, 0, 0, 0, 0);
 		}
+		pthread_mutex_unlock(&ctx->peerlist_lock);
 		ctx->oob_queue_bytesize -= oob_buffer->size;
 		ctx->oob_queue_read_index++;
 	}
