@@ -6,10 +6,13 @@ Recommendations TR-06-1 (Simple Profile), TR-06-2 (Main Profile),
 and TR-06-3 (Advanced Profile).
 
 
-Changes for 0.2.18 (pre-release):
+Changes for 0.2.18:
 ---------------------------------
 
 ABI/API:
+  - ABI version 15:0:11 (soversion 4, binary-compatible with 0.2.15,
+    0.2.16, and 0.2.17)
+  - API version 4.12.0 (new features, backwards-compatible)
   - RIST_PEER_CONFIG_VERSION bumped from 2 to 3 (one new field:
     srp_compat_legacy).  Existing zero-initialised peer configs
     continue to work; the new field defaults to 0 (spec-compliant).
