@@ -429,6 +429,22 @@ int main(int argc, char *argv[])
 			exitcode = 1;
 			goto cleanup;
 		}
+#if HAVE_SRP_SUPPORT
+		/* Present SRP credentials supplied on the sender URL
+		 * (?username=...&password=...), the same way ristsender does.
+		 * Without this the credentials are parsed into the peer config but
+		 * never handed to EAP, so authentication to an SRP-protected
+		 * listener never starts. */
+		if (strlen(sender_peer_cfg->srp_username) > 0 &&
+		    strlen(sender_peer_cfg->srp_password) > 0) {
+			if (rist_enable_eap_srp_2(sender_peer, sender_peer_cfg->srp_username,
+			                          sender_peer_cfg->srp_password, NULL, NULL) != 0) {
+				fprintf(stderr, "Failed to enable EAP-SRP on sender\n");
+				exitcode = 1;
+				goto cleanup;
+			}
+		}
+#endif
 		if (statsinterval > 0)
 			rist_stats_callback_set(sender_ctx, statsinterval, cb_stats, NULL);
 	}
@@ -476,7 +492,18 @@ int main(int argc, char *argv[])
 		}
 
 #if HAVE_SRP_SUPPORT
-		if (srpfile) {
+		/* Receiver leg acts as an SRP client when credentials are supplied on
+		 * the input URL (a two-port client connecting out to a listener);
+		 * otherwise it is the server that verifies callers against -F. */
+		if (strlen(recv_peer_cfg->srp_username) > 0 &&
+		    strlen(recv_peer_cfg->srp_password) > 0) {
+			if (rist_enable_eap_srp_2(recv_peer, recv_peer_cfg->srp_username,
+			                          recv_peer_cfg->srp_password, NULL, NULL) != 0) {
+				fprintf(stderr, "Failed to enable EAP-SRP (receiver credentials)\n");
+				exitcode = 1;
+				goto cleanup;
+			}
+		} else if (srpfile) {
 			if (rist_enable_eap_srp_2(recv_peer, NULL, NULL, user_verifier_lookup, (void *)srpfile) != 0) {
 				fprintf(stderr, "Failed to enable EAP-SRP\n");
 				exitcode = 1;
