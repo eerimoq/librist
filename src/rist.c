@@ -445,6 +445,18 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 		ret = -1;
 		goto free_ctx_and_ret;
 	}
+	/* Advanced sender keeps a parallel 16-bit-RTP retransmit index so a
+	 * peer that negotiated down to Main (which NACKs in the RTP domain) can
+	 * still be served. Main/Simple senders index by RTP directly already. */
+	if (ctx->common.profile == RIST_PROFILE_ADVANCED) {
+		ctx->seq_rtp_index = calloc((size_t)UINT16_MAX + 1, sizeof(*ctx->seq_rtp_index));
+		if (RIST_UNLIKELY(!ctx->seq_rtp_index)) {
+			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+						  "Could not allocate sender RTP recovery index, OOM\n");
+			ret = -1;
+			goto free_ctx_and_ret;
+		}
+	}
 	atomic_init(&ctx->sender_queue_write_index, 1);
 	atomic_init(&ctx->sender_queue_read_index, 0);
 
@@ -502,6 +514,7 @@ free_ctx_and_ret:
 		free(ctx->sender_retry_queue);
 		free(ctx->sender_queue);
 		free(ctx->seq_index);
+		free(ctx->seq_rtp_index);
 	}
 	free(ctx);
 	free(rist_ctx);

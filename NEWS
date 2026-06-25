@@ -28,6 +28,17 @@ Features:
     where the heavy direction is forward and the reverse is light.
 
 Bug Fixes:
+  - Advanced<->Main retransmissions are now resolved correctly.  An
+    Advanced-profile sender indexes its retransmit buffer by the 32-bit
+    advanced sequence, but a peer that negotiated down to Main (TR-06-3: an
+    Advanced device starts each peer in Main and only frames Advanced once
+    the peer advertises I=1) requests retransmits with a 16-bit RTP sequence
+    and nack_seq_msb = 0.  Those two sequence spaces are independent, so the
+    Main peer's NACK never matched the 32-bit index and nothing was
+    retransmitted.  The Advanced sender now keeps a parallel 16-bit RTP
+    retransmit index and resolves, validates, and frames a downgraded-Main
+    peer's retransmits in the RTP domain.  Advanced<->Advanced behaviour is
+    unchanged.
   - risttunnel: fix an intermittent SIGSEGV at startup caused by an
     uninitialised logging-settings pointer.  risttunnel now points log_ptr
     at the static logging settings like the other tools, so rist_logging_set()

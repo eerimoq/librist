@@ -11,6 +11,7 @@
 #include "proto/protocol_gre.h"
 #include "udp-private.h"
 #include "rist-private.h"
+#include "rist-retx-domain.h"
 #include "log-private.h"
 #include "socket-shim.h"
 #include "endian-shim.h"
@@ -1048,10 +1049,20 @@ peer_select:
 	}
 }
 
-static size_t rist_sender_index_get(struct rist_sender *ctx, uint32_t seq)
+static size_t rist_sender_index_get(struct rist_sender *ctx, uint32_t seq,
+				     const struct rist_peer *target)
 {
-	if (ctx->common.profile == RIST_PROFILE_ADVANCED)
+	if (ctx->common.profile == RIST_PROFILE_ADVANCED) {
+		/* A peer that negotiated down to Main NACKs in the 16-bit RTP
+		 * sequence domain (nack_seq_msb = 0), which never matches the
+		 * 32-bit advanced seq_index. Serve its retransmits from the
+		 * parallel RTP index. Advanced-negotiated peers keep the 32-bit
+		 * path, so the production Advanced<->Advanced lookup is unchanged. */
+		if (ctx->seq_rtp_index && target &&
+		    rist_retx_use_rtp_domain(ctx->common.profile, target->remote_supports_advanced))
+			return ctx->seq_rtp_index[(uint16_t)seq];
 		return ctx->seq_index[seq & (ctx->sender_queue_max - 1)];
+	}
 	return ctx->seq_index[(uint16_t)seq];
 }
 
@@ -1086,10 +1097,18 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 		return -1;
 	}
 
+	/* The peer that will actually receive this retransmission. Its
+	 * negotiated profile (remote_supports_advanced) decides both the
+	 * retransmit framing (rist_send_seq_rtcp) and, for an Advanced sender,
+	 * which sequence domain to resolve the request in. */
+	struct rist_peer *idx_target = retry->peer->peer_data ? retry->peer->peer_data : retry->peer;
+	bool main_domain_retx = rist_retx_use_rtp_domain(ctx->common.profile,
+							 idx_target->remote_supports_advanced);
+
 	// If they request a non-sense seq number, we will catch it when we check the seq number against
 	// the one on that buffer position and it does not match
 
-	size_t idx = rist_sender_index_get(ctx, retry->seq);
+	size_t idx = rist_sender_index_get(ctx, retry->seq, idx_target);
 	if (RIST_UNLIKELY(ctx->sender_queue[idx] == NULL)) {
 		rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
 			" Couldn't find block %" PRIu32 " (i=%zu/r=%zu/w=%zu/d=%zu/rs=%zu), consider increasing the buffer size\n",
@@ -1098,7 +1117,7 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 		retry->peer->stats_sender_instant.retrans_skip++;
 		return -1;
 	} else if (RIST_UNLIKELY(
-		ctx->common.profile == RIST_PROFILE_ADVANCED
+		(ctx->common.profile == RIST_PROFILE_ADVANCED && !main_domain_retx)
 			? (retry->seq != ctx->sender_queue[idx]->seq)
 			: ((uint16_t)retry->seq != ctx->sender_queue[idx]->seq_rtp))) {
 		rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
@@ -1183,7 +1202,7 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	uint16_t src_port = buffer->src_port;
 	if (src_port == 0)
 		src_port = 32768 + retry->peer->peer_data->adv_peer_id;
-	uint32_t retry_wire_seq = (ctx->common.profile == RIST_PROFILE_ADVANCED) ? buffer->seq : (uint32_t)buffer->seq_rtp;
+	uint32_t retry_wire_seq = (ctx->common.profile == RIST_PROFILE_ADVANCED && !main_domain_retx) ? buffer->seq : (uint32_t)buffer->seq_rtp;
 	ret = rist_send_seq_rtcp(retry->peer->peer_data, retry_wire_seq, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (retry->peer->peer_data->config.virt_dst_port & ~1UL), true, ctx->sender_queue[idx]->ts_null_bytes);
 	// update bandwidth value
 	rist_calculate_bitrate(ret, retry_bw);
@@ -1209,7 +1228,8 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 void rist_retry_enqueue(struct rist_sender *ctx, uint32_t seq, struct rist_peer *peer)
 {
 	uint64_t now = timestampNTP_u64();
-	size_t idx = rist_sender_index_get(ctx, seq);
+	struct rist_peer *idx_target = peer ? (peer->peer_data ? peer->peer_data : peer) : NULL;
+	size_t idx = rist_sender_index_get(ctx, seq, idx_target);
 	struct rist_buffer *buffer = ctx->sender_queue[idx];
 	struct rist_retry *retry;
 

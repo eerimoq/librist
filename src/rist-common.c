@@ -4114,9 +4114,14 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 			}
 			else {
 				rist_sender_send_data_balanced(ctx, buffer);
-				if (ctx->common.profile == RIST_PROFILE_ADVANCED)
+				if (ctx->common.profile == RIST_PROFILE_ADVANCED) {
 					ctx->seq_index[buffer->seq & (ctx->sender_queue_max - 1)] = (uint32_t)idx;
-				else
+					/* Mirror into the RTP index so a Main-downgraded peer's
+					 * 16-bit NACK can still resolve this packet. Dead data for
+					 * Advanced-negotiated peers (never read for them). */
+					if (ctx->seq_rtp_index)
+						ctx->seq_rtp_index[buffer->seq_rtp] = (uint32_t)idx;
+				} else
 					ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
 			}
 		}
@@ -5250,6 +5255,8 @@ void rist_sender_destroy_local(struct rist_sender *ctx)
 	ctx->sender_queue = NULL;
 	free(ctx->seq_index);
 	ctx->seq_index = NULL;
+	free(ctx->seq_rtp_index);
+	ctx->seq_rtp_index = NULL;
 	free(ctx);
 	ctx = NULL;
 }

@@ -528,6 +528,13 @@ struct rist_sender {
 	/* Recovery - heap-allocated to sender_queue_max so Advanced Profile
 	 * can index with the full 32-bit seq space (seq & (queue_max - 1)). */
 	uint32_t *seq_index;
+	/* Parallel 16-bit-RTP index (65536 entries), allocated only for an
+	 * Advanced-context sender. A peer that negotiated down to Main NACKs in
+	 * the 16-bit RTP sequence domain (nack_seq_msb = 0), which never matches
+	 * the 32-bit advanced seq_index; this lets the Advanced sender still find
+	 * and retransmit the requested packet for that peer. NULL on Main/Simple
+	 * senders (their primary seq_index is already the 16-bit domain). */
+	uint32_t *seq_rtp_index;
 	size_t sender_recover_min_time;
 	size_t sender_queue_buffer_size;
 
