@@ -45,6 +45,33 @@ Bug Fixes:
     configures them in place instead of writing through a garbage pointer.
     As a side effect the -v loglevel now also applies to risttunnel's own
     messages.
+  - risttunnel now presents SRP credentials on its sender/client legs.
+    Only the listener (-F verifier file) enabled EAP-SRP before, so a
+    risttunnel pointed at an SRP-protected listener failed with
+    "credentials have not been configured" while the listener waited
+    forever for authentication.  When the URL carries both an SRP
+    username and password, risttunnel now calls rist_enable_eap_srp_2()
+    on the peer like ristsender/ristreceiver/rist2rist; the receiver leg
+    falls back to the verifier file when no credentials are supplied.
+  - Fixed a use-after-free in rist_oob_dequeue.  rist_oob_write() stashes
+    the destination peer from a caller thread and the protocol thread
+    sends it later; a peer torn down by a NAT rebind or session timeout
+    in between (e.g. the child peer the risttunnel --single-port reverse
+    path captures via the auth/connect callback) left the send path
+    dereferencing a freed peer - an intermittent SIGSEGV.  The dequeue
+    now takes peerlist_lock, verifies the stashed peer is still on the
+    live peer list, drops the packet if it is gone, and holds the lock
+    across the whole send so a concurrent add/remove cannot free the
+    peer underneath it.
+  - rist_receiver_data_block_free2() is now a no-op on a NULL block,
+    like free(NULL).  The receiver data_fd/tun delivery path can
+    legitimately hold a NULL block by the time the fifo-overflow branch
+    frees it: free_data_block() nulls the pointer after a successful
+    free, and merged FEC pairs never allocate one.  The previous
+    unconditional (*block)->ref dereference therefore read offset 0x40
+    of a NULL pointer and crashed (observed as "segfault at 40") on
+    listeners running risttunnel under abrupt link changes.  The guard
+    protects every caller, not just the data_fd path.
 
 
 Changes for 0.2.18:
