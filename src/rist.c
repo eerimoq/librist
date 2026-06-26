@@ -1089,6 +1089,11 @@ int rist_stats_callback_set(struct rist_ctx *ctx, int statsinterval, int (*stats
 				f = f->next;
 			}
 		}
+		else if (ctx->mode == RIST_SENDER_MODE && ctx->sender_ctx)
+		{
+			/* sender loop reads its own copy, not the common one */
+			ctx->sender_ctx->stats_report_time = statsinterval * RIST_CLOCK;
+		}
 	}
 	pthread_mutex_unlock(&cctx->stats_lock);
 	return 0;

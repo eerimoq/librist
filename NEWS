@@ -92,6 +92,17 @@ Bug Fixes:
     call whose declaration lives under HAVE_SRP_SUPPORT; the call is now
     guarded, and without SRP the re-association safely refuses (the cname
     is not a per-peer secret, so it must not migrate a peer unauthenticated).
+  - Sender stats reported tiny "packets_sent"/"packets_received" deltas
+    (issue #221) when the structured callback was registered with
+    rist_stats_callback_set().  That setter updated the common stats interval
+    but not the sender's own copy, which the sender loop actually reads, so it
+    stayed 0 and the callback fired every loop iteration instead of once per
+    interval; each report then covered only one pass.  The setter now also
+    sets the sender interval (matching rist_sender_stats_callback_set), and
+    the sender loop reads the interval fresh each pass and skips reporting
+    entirely when it is 0, so a stats-disabled sender no longer builds a
+    stats object every iteration.  Affected risttunnel's sender stats; the
+    bundled Prometheus path (ristsender) uses the legacy setter and was not.
 
 
 Changes for 0.2.18:
