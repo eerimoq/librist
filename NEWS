@@ -83,6 +83,10 @@ Bug Fixes:
     fifo.  The baseline reset now also clears the drift samples, matching
     the existing clock-wrap reset.  This was most visible as reproducible
     failures of the advanced+unicast+client tests on slower build hosts.
+  - Build: tools/ristsender.c no longer trips -Woverlength-strings
+    (issue #219).  Adding --blind-send to the usage text pushed the help
+    string past the 4095-character C99 string-literal limit; it is now
+    split into two literals printed back to back (output unchanged).
 
 
 Changes for 0.2.18:
