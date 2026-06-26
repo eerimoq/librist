@@ -747,6 +747,14 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 		f->last_packet_ts = packet_time;
 		f->time_offset_changed_ts = 0;
 		f->time_offset_old = f->time_offset;
+		/* Discard clock-drift samples gathered against the previous
+		 * baseline.  A flow-id change or a Main<->Advanced wire-framing
+		 * switch (the two framings carry source_time in different
+		 * timestamp domains) lands here with stale samples still queued;
+		 * blending them into the median yields a bogus multi-second
+		 * offset correction that releases the whole buffer at once and
+		 * overflows the data-out fifo.  Matches the clock-wrap reset. */
+		f->offset_recalc_sample_count = 0;
 
 		receiver_insert_queue_packet(f, peer, idx_initial, buf, len, seq, source_time, src_port, dst_port, packet_time);
 		atomic_store_explicit(&f->receiver_queue_output_idx, idx_initial, memory_order_release);

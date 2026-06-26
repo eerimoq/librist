@@ -72,6 +72,17 @@ Bug Fixes:
     of a NULL pointer and crashed (observed as "segfault at 40") on
     listeners running risttunnel under abrupt link changes.  The guard
     protects every caller, not just the data_fd path.
+  - Advanced receiver: fix a spurious "Rist data out fifo queue overflow"
+    (issue #218) when an Advanced flow upgrades from Main to Advanced wire
+    framing mid-stream.  The two framings carry source_time in different
+    timestamp domains, so the framing switch resets the flow timing
+    baseline; that reset re-derived time_offset but left the clock-drift
+    sample buffer populated with stale Main-domain samples.  The next
+    median recalculation then jumped the offset by several seconds and
+    released the whole receiver buffer at once, overflowing the data-out
+    fifo.  The baseline reset now also clears the drift samples, matching
+    the existing clock-wrap reset.  This was most visible as reproducible
+    failures of the advanced+unicast+client tests on slower build hosts.
 
 
 Changes for 0.2.18:
