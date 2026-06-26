@@ -174,7 +174,11 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "                                                 | 1 = only non udp data is accepted (default)              |\n"
 "                                                 | 2 = no data goes into or out of oob channel              |\n"
 "       -f | --fast-start value                   | Controls data output flow before handshake is completed  |\n"
-"       -c | --config name.yaml                   | YAML config file                                         |\n"
+"       -c | --config name.yaml                   | YAML config file                                         |\n";
+// Split into two string literals: a single literal must stay under the
+// C99 translation limit of 4095 chars (5.2.4.1).  The two parts are
+// printed back-to-back, so the help output is unchanged.
+const char help_str2[] =
 //"                                                 | -1 = hold data out and igmp source joins                 |\n"
 "                                                 |  0 = hold data out                                       |\n"
 "                                                 |  1 = start to send data immediately                      |\n"
@@ -304,7 +308,7 @@ static void input_udp_sockerr(struct evsocket_ctx *evctx, int fd, short revents,
 
 static void usage(char *cmd)
 {
-	rist_log(&logging_settings, RIST_LOG_INFO, "%s\n%s version %s libRIST library: %s API version: %s\n", cmd, help_str, RISTSENDER_VERSION, librist_version(), librist_api_version());
+	rist_log(&logging_settings, RIST_LOG_INFO, "%s\n%s%s version %s libRIST library: %s API version: %s\n", cmd, help_str, help_str2, RISTSENDER_VERSION, librist_version(), librist_api_version());
 	exit(1);
 }
 

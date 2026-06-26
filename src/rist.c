@@ -237,7 +237,13 @@ void rist_receiver_data_block_free(struct rist_data_block **const block)
 
 void rist_receiver_data_block_free2(struct rist_data_block **block)
 {
+	/* free(NULL)-style no-op: *block may already be NULL on the data_fd
+	 * delivery path (free_data_block nulls it). Mirror its guard. */
+	if (block == NULL)
+		return;
 	struct rist_data_block *b = *block;
+	if (b == NULL)
+		return;
 	if (b->ref != NULL)
 		free_data_block(block);
 }
@@ -439,6 +445,18 @@ int rist_sender_create(struct rist_ctx **_ctx, enum rist_profile profile,
 		ret = -1;
 		goto free_ctx_and_ret;
 	}
+	/* Advanced sender keeps a parallel 16-bit-RTP retransmit index so a
+	 * peer that negotiated down to Main (which NACKs in the RTP domain) can
+	 * still be served. Main/Simple senders index by RTP directly already. */
+	if (ctx->common.profile == RIST_PROFILE_ADVANCED) {
+		ctx->seq_rtp_index = calloc((size_t)UINT16_MAX + 1, sizeof(*ctx->seq_rtp_index));
+		if (RIST_UNLIKELY(!ctx->seq_rtp_index)) {
+			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
+						  "Could not allocate sender RTP recovery index, OOM\n");
+			ret = -1;
+			goto free_ctx_and_ret;
+		}
+	}
 	atomic_init(&ctx->sender_queue_write_index, 1);
 	atomic_init(&ctx->sender_queue_read_index, 0);
 
@@ -496,6 +514,7 @@ free_ctx_and_ret:
 		free(ctx->sender_retry_queue);
 		free(ctx->sender_queue);
 		free(ctx->seq_index);
+		free(ctx->seq_rtp_index);
 	}
 	free(ctx);
 	free(rist_ctx);
@@ -707,18 +726,36 @@ int rist_sender_data_write(struct rist_ctx *rist_ctx, const struct rist_data_blo
 /* Shared OOB functions -> Tunneled IP packets within GRE */
 int rist_oob_read(struct rist_ctx *ctx, const struct rist_oob_block **oob_block)
 {
-	RIST_MARK_UNUSED(oob_block);
 	if (!ctx)
 	{
 		rist_log_priv3(RIST_LOG_ERROR, "ctx is null on rist_oob_read call!\n");
+		return -1;
+	}
+	if (!oob_block)
+	{
+		rist_log_priv3(RIST_LOG_ERROR, "oob_block is null on rist_oob_read call!\n");
 		return -1;
 	}
 	struct rist_common_ctx *cctx = rist_struct_get_common(ctx);
 	if (!cctx)
 		return -1;
 
-	rist_log_priv(cctx, RIST_LOG_ERROR, "rist_receiver_oob_read not implemented!\n");
-	return 0;
+	*oob_block = NULL;
+
+	if (!cctx->oob_data_enabled)
+	{
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+				"rist_oob_read called but oob data is not enabled; call rist_oob_callback_set first\n");
+		return -1;
+	}
+	if (cctx->oob_data_callback)
+	{
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+				"rist_oob_read cannot be used while an oob callback is installed\n");
+		return -1;
+	}
+
+	return rist_oob_dequeue_rx(cctx, oob_block);
 }
 
 int rist_oob_write(struct rist_ctx *ctx, const struct rist_oob_block *oob_block)
@@ -778,6 +815,9 @@ int rist_oob_callback_set(struct rist_ctx *ctx,
 	cctx->oob_data_callback_argument = arg;
 	cctx->oob_queue_write_index = 0;
 	cctx->oob_queue_read_index = 0;
+	cctx->oob_rx_queue_write_index = 0;
+	cctx->oob_rx_queue_read_index = 0;
+	cctx->oob_rx_current = NULL;
 
 	return 0;
 }
@@ -1048,6 +1088,11 @@ int rist_stats_callback_set(struct rist_ctx *ctx, int statsinterval, int (*stats
 				f->stats_report_time = statsinterval * RIST_CLOCK;
 				f = f->next;
 			}
+		}
+		else if (ctx->mode == RIST_SENDER_MODE && ctx->sender_ctx)
+		{
+			/* sender loop reads its own copy, not the common one */
+			ctx->sender_ctx->stats_report_time = statsinterval * RIST_CLOCK;
 		}
 	}
 	pthread_mutex_unlock(&cctx->stats_lock);

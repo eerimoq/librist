@@ -6,6 +6,105 @@ Recommendations TR-06-1 (Simple Profile), TR-06-2 (Main Profile),
 and TR-06-3 (Advanced Profile).
 
 
+Changes for 0.2.19:
+---------------------------------
+
+Features:
+  - rist_oob_read() is now implemented.  When out-of-band data is enabled
+    without a callback (rist_oob_callback_set with a NULL callback), incoming
+    OOB packets are queued and can be drained by polling rist_oob_read(), as
+    the public API already documented.  The previous stub returned success
+    without writing the output pointer, which could crash a polling caller.
+  - risttunnel gains a single-port mode (-1/--single-port): a bidirectional
+    IP tunnel carried over one UDP port instead of two.  A single RIST
+    connection runs the forward direction over the RTP data_fd path
+    (ARQ-protected) and the reverse direction over the OOB channel on the
+    same socket (best-effort, no ARQ).  The caller passes only -o, the
+    listener only -b.  Because librist learns the OOB return peer only from
+    received OOB, the listener captures the connecting peer through the
+    auth/connect callback and hands it explicitly to rist_oob_write(), while
+    the caller injects inbound OOB into its TUN through an OOB receive
+    callback.  Intended for low-bandwidth, NAT-friendly control tunnels
+    where the heavy direction is forward and the reverse is light.
+
+Bug Fixes:
+  - Advanced<->Main retransmissions are now resolved correctly.  An
+    Advanced-profile sender indexes its retransmit buffer by the 32-bit
+    advanced sequence, but a peer that negotiated down to Main (TR-06-3: an
+    Advanced device starts each peer in Main and only frames Advanced once
+    the peer advertises I=1) requests retransmits with a 16-bit RTP sequence
+    and nack_seq_msb = 0.  Those two sequence spaces are independent, so the
+    Main peer's NACK never matched the 32-bit index and nothing was
+    retransmitted.  The Advanced sender now keeps a parallel 16-bit RTP
+    retransmit index and resolves, validates, and frames a downgraded-Main
+    peer's retransmits in the RTP domain.  Advanced<->Advanced behaviour is
+    unchanged.
+  - risttunnel: fix an intermittent SIGSEGV at startup caused by an
+    uninitialised logging-settings pointer.  risttunnel now points log_ptr
+    at the static logging settings like the other tools, so rist_logging_set()
+    configures them in place instead of writing through a garbage pointer.
+    As a side effect the -v loglevel now also applies to risttunnel's own
+    messages.
+  - risttunnel now presents SRP credentials on its sender/client legs.
+    Only the listener (-F verifier file) enabled EAP-SRP before, so a
+    risttunnel pointed at an SRP-protected listener failed with
+    "credentials have not been configured" while the listener waited
+    forever for authentication.  When the URL carries both an SRP
+    username and password, risttunnel now calls rist_enable_eap_srp_2()
+    on the peer like ristsender/ristreceiver/rist2rist; the receiver leg
+    falls back to the verifier file when no credentials are supplied.
+  - Fixed a use-after-free in rist_oob_dequeue.  rist_oob_write() stashes
+    the destination peer from a caller thread and the protocol thread
+    sends it later; a peer torn down by a NAT rebind or session timeout
+    in between (e.g. the child peer the risttunnel --single-port reverse
+    path captures via the auth/connect callback) left the send path
+    dereferencing a freed peer - an intermittent SIGSEGV.  The dequeue
+    now takes peerlist_lock, verifies the stashed peer is still on the
+    live peer list, drops the packet if it is gone, and holds the lock
+    across the whole send so a concurrent add/remove cannot free the
+    peer underneath it.
+  - rist_receiver_data_block_free2() is now a no-op on a NULL block,
+    like free(NULL).  The receiver data_fd/tun delivery path can
+    legitimately hold a NULL block by the time the fifo-overflow branch
+    frees it: free_data_block() nulls the pointer after a successful
+    free, and merged FEC pairs never allocate one.  The previous
+    unconditional (*block)->ref dereference therefore read offset 0x40
+    of a NULL pointer and crashed (observed as "segfault at 40") on
+    listeners running risttunnel under abrupt link changes.  The guard
+    protects every caller, not just the data_fd path.
+  - Advanced receiver: fix a spurious "Rist data out fifo queue overflow"
+    (issue #218) when an Advanced flow upgrades from Main to Advanced wire
+    framing mid-stream.  The two framings carry source_time in different
+    timestamp domains, so the framing switch resets the flow timing
+    baseline; that reset re-derived time_offset but left the clock-drift
+    sample buffer populated with stale Main-domain samples.  The next
+    median recalculation then jumped the offset by several seconds and
+    released the whole receiver buffer at once, overflowing the data-out
+    fifo.  The baseline reset now also clears the drift samples, matching
+    the existing clock-wrap reset.  This was most visible as reproducible
+    failures of the advanced+unicast+client tests on slower build hosts.
+  - Build: tools/ristsender.c no longer trips -Woverlength-strings
+    (issue #219).  Adding --blind-send to the usage text pushed the help
+    string past the 4095-character C99 string-literal limit; it is now
+    split into two literals printed back to back (output unchanged).
+  - Build: fix compilation with SRP support disabled (issue #220).  The
+    listener cname re-association added an unguarded eap_is_authenticated()
+    call whose declaration lives under HAVE_SRP_SUPPORT; the call is now
+    guarded, and without SRP the re-association safely refuses (the cname
+    is not a per-peer secret, so it must not migrate a peer unauthenticated).
+  - Sender stats reported tiny "packets_sent"/"packets_received" deltas
+    (issue #221) when the structured callback was registered with
+    rist_stats_callback_set().  That setter updated the common stats interval
+    but not the sender's own copy, which the sender loop actually reads, so it
+    stayed 0 and the callback fired every loop iteration instead of once per
+    interval; each report then covered only one pass.  The setter now also
+    sets the sender interval (matching rist_sender_stats_callback_set), and
+    the sender loop reads the interval fresh each pass and skips reporting
+    entirely when it is 0, so a stats-disabled sender no longer builds a
+    stats object every iteration.  Affected risttunnel's sender stats; the
+    bundled Prometheus path (ristsender) uses the legacy setter and was not.
+
+
 Changes for 0.2.18:
 ---------------------------------
 

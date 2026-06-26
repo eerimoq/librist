@@ -747,6 +747,14 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 		f->last_packet_ts = packet_time;
 		f->time_offset_changed_ts = 0;
 		f->time_offset_old = f->time_offset;
+		/* Discard clock-drift samples gathered against the previous
+		 * baseline.  A flow-id change or a Main<->Advanced wire-framing
+		 * switch (the two framings carry source_time in different
+		 * timestamp domains) lands here with stale samples still queued;
+		 * blending them into the median yields a bogus multi-second
+		 * offset correction that releases the whole buffer at once and
+		 * overflows the data-out fifo.  Matches the clock-wrap reset. */
+		f->offset_recalc_sample_count = 0;
 
 		receiver_insert_queue_packet(f, peer, idx_initial, buf, len, seq, source_time, src_port, dst_port, packet_time);
 		atomic_store_explicit(&f->receiver_queue_output_idx, idx_initial, memory_order_release);
@@ -2296,16 +2304,84 @@ static void rist_recv_oob_data(struct rist_peer *peer, struct rist_buffer *paylo
 	// TODO: if the calling app locks the thread for long, the protocol management thread will suffer
 	// either use a new thread with a fifo or write warning on documentation
 	struct rist_common_ctx *ctx = get_cctx(peer);
-	if (ctx->oob_data_enabled && ctx->oob_data_callback)
+	if (!ctx->oob_data_enabled)
+		return;
+
+	if (ctx->oob_current_peer == NULL || ctx->oob_current_peer->dead)
+		ctx->oob_current_peer = peer;
+
+	if (ctx->oob_data_callback)
 	{
 		struct rist_oob_block oob_block;
-		if (ctx->oob_current_peer == NULL || ctx->oob_current_peer->dead)
-			ctx->oob_current_peer = peer;
 		oob_block.peer = peer;
 		oob_block.payload = payload->data;
 		oob_block.payload_len = payload->size;
+		oob_block.ts_ntp = payload->source_time;
 		ctx->oob_data_callback(ctx->oob_data_callback_argument, &oob_block);
+		return;
 	}
+
+	/* No callback installed: stash the packet in the receive fifo so the
+	 * application can pull it via rist_oob_read(). */
+	pthread_rwlock_wrlock(&ctx->oob_queue_lock);
+	if ((uint16_t)(ctx->oob_rx_queue_write_index + 1) == ctx->oob_rx_queue_read_index)
+	{
+		pthread_rwlock_unlock(&ctx->oob_queue_lock);
+		rist_log_priv(ctx, RIST_LOG_WARN,
+				"oob receive queue is full, dropping packet of size %zu\n", payload->size);
+		return;
+	}
+	struct rist_buffer *b = rist_new_buffer(ctx, payload->data, payload->size,
+			RIST_PAYLOAD_TYPE_DATA_OOB, 0, payload->source_time, 0, 0);
+	if (RIST_UNLIKELY(!b))
+	{
+		pthread_rwlock_unlock(&ctx->oob_queue_lock);
+		rist_log_priv(ctx, RIST_LOG_ERROR, "Could not allocate oob receive buffer, OOM\n");
+		return;
+	}
+	b->peer = peer;
+	ctx->oob_rx_queue[ctx->oob_rx_queue_write_index] = b;
+	ctx->oob_rx_queue_write_index = (uint16_t)(ctx->oob_rx_queue_write_index + 1);
+	pthread_rwlock_unlock(&ctx->oob_queue_lock);
+}
+
+/* Pull one packet from the oob receive fifo.  The returned block is owned by
+ * the library and stays valid until the next rist_oob_dequeue_rx() call.
+ * Returns the number of packets that were available (>=1) when data is
+ * returned, 0 when the fifo is empty. */
+int rist_oob_dequeue_rx(struct rist_common_ctx *ctx, const struct rist_oob_block **oob_block)
+{
+	*oob_block = NULL;
+
+	pthread_rwlock_wrlock(&ctx->oob_queue_lock);
+
+	/* release the buffer handed out by the previous call */
+	if (ctx->oob_rx_current)
+	{
+		free_rist_buffer(ctx, ctx->oob_rx_current);
+		ctx->oob_rx_current = NULL;
+	}
+
+	if (ctx->oob_rx_queue_read_index == ctx->oob_rx_queue_write_index)
+	{
+		pthread_rwlock_unlock(&ctx->oob_queue_lock);
+		return 0;
+	}
+
+	struct rist_buffer *b = ctx->oob_rx_queue[ctx->oob_rx_queue_read_index];
+	ctx->oob_rx_queue[ctx->oob_rx_queue_read_index] = NULL;
+	ctx->oob_rx_queue_read_index = (uint16_t)(ctx->oob_rx_queue_read_index + 1);
+	int available = (uint16_t)(ctx->oob_rx_queue_write_index - ctx->oob_rx_queue_read_index) + 1;
+
+	ctx->oob_rx_current = b;
+	ctx->oob_rx_block.peer = b->peer;
+	ctx->oob_rx_block.payload = (uint8_t *)b->data + RIST_MAX_PAYLOAD_OFFSET;
+	ctx->oob_rx_block.payload_len = b->size;
+	ctx->oob_rx_block.ts_ntp = b->source_time;
+	*oob_block = &ctx->oob_rx_block;
+
+	pthread_rwlock_unlock(&ctx->oob_queue_lock);
+	return available;
 }
 
 static void rist_rtcp_handle_echo_request(struct rist_peer *peer, struct rist_rtcp_echoext *echoreq) {
@@ -2730,8 +2806,14 @@ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64
 	    new_peer->receiver_mode || new_peer->receiver_name[0] == '\0')
 		return false;
 
+#if HAVE_SRP_SUPPORT
 	if (!new_peer->eap_ctx || !eap_is_authenticated(new_peer->eap_ctx))
 		return false;
+#else
+	/* No SRP: there is no authenticated per-peer session to gate on, and
+	 * the cname is not a per-peer secret, so reassociation is unsafe. */
+	return false;
+#endif
 
 	uint64_t ka = new_peer->rtcp_keepalive_interval
 	              ? new_peer->rtcp_keepalive_interval
@@ -3915,12 +3997,27 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 
 		uint8_t *payload = oob_buffer->data;
 		struct rist_peer *p = oob_buffer->peer;
+
+		/* The stashed peer may have been freed (NAT rebind / timeout) since
+		 * rist_oob_write() queued it; verify it is still live and hold
+		 * peerlist_lock across the send so it can't be freed under us. */
+		pthread_mutex_lock(&ctx->peerlist_lock);
+		bool peer_alive = false;
+		for (struct rist_peer *pp = ctx->PEERS; pp != NULL; pp = pp->next) {
+			if (pp == p) {
+				peer_alive = true;
+				break;
+			}
+		}
+		if (!peer_alive) {
+			pthread_mutex_unlock(&ctx->peerlist_lock);
+			rist_log_priv(ctx, RIST_LOG_WARN, "OOB: target peer no longer exists, dropping packet\n");
+			ctx->oob_queue_bytesize -= oob_buffer->size;
+			ctx->oob_queue_read_index++;
+			continue;
+		}
 		if (p->listening) {
-			/* Listener peer: send OOB to all alive child peers.
-			 * Hold peerlist_lock while walking the child list to
-			 * prevent a concurrent peer add/remove from freeing a
-			 * sibling_next pointer underneath us. */
-			pthread_mutex_lock(&ctx->peerlist_lock);
+			/* Listener peer: send OOB to all alive child peers. */
 			struct rist_peer *child = p->child;
 			bool sent = false;
 			while (child) {
@@ -3931,13 +4028,13 @@ static void rist_oob_dequeue(struct rist_common_ctx *ctx, int maxcount)
 				}
 				child = child->sibling_next;
 			}
-			pthread_mutex_unlock(&ctx->peerlist_lock);
 			if (!sent)
 				rist_log_priv(ctx, RIST_LOG_WARN, "OOB: listener peer has no alive children, dropping\n");
 		} else {
 			rist_send_common_rtcp(p, RIST_PAYLOAD_TYPE_DATA_OOB, &payload[RIST_MAX_PAYLOAD_OFFSET],
 					oob_buffer->size, 0, 0, 0, 0, 0);
 		}
+		pthread_mutex_unlock(&ctx->peerlist_lock);
 		ctx->oob_queue_bytesize -= oob_buffer->size;
 		ctx->oob_queue_read_index++;
 	}
@@ -4031,9 +4128,14 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 			}
 			else {
 				rist_sender_send_data_balanced(ctx, buffer);
-				if (ctx->common.profile == RIST_PROFILE_ADVANCED)
+				if (ctx->common.profile == RIST_PROFILE_ADVANCED) {
 					ctx->seq_index[buffer->seq & (ctx->sender_queue_max - 1)] = (uint32_t)idx;
-				else
+					/* Mirror into the RTP index so a Main-downgraded peer's
+					 * 16-bit NACK can still resolve this packet. Dead data for
+					 * Advanced-negotiated peers (never read for them). */
+					if (ctx->seq_rtp_index)
+						ctx->seq_rtp_index[buffer->seq_rtp] = (uint32_t)idx;
+				} else
 					ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
 			}
 		}
@@ -4324,7 +4426,6 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 	int max_oobperloop = 100;
 
 	int max_jitter_ms = ctx->common.rist_max_jitter / RIST_CLOCK;
-	uint64_t rist_stats_interval = ctx->stats_report_time; // 1 second
 
 	rist_log_priv(&ctx->common, RIST_LOG_INFO, "Starting master sender loop at %d ms max jitter\n",
 			max_jitter_ms);
@@ -4356,8 +4457,12 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 			pthread_mutex_unlock(&ctx->common.peerlist_lock);
 		}
 
-		// stats timer
-		if (now > ctx->stats_next_time) {
+		// stats timer; 0 == disabled.  Read fresh so a callback registered
+		// after loop start takes effect.
+		uint64_t rist_stats_interval = ctx->stats_report_time;
+		if (rist_stats_interval == 0) {
+			ctx->stats_next_time = now; // keep current to avoid a catch-up burst
+		} else if (now > ctx->stats_next_time) {
 			ctx->stats_next_time += rist_stats_interval;
 			rist_sender_flow_statistics(ctx);
 			// TODO: remove dead peers after stale flow time (both sender list and peer chain)
@@ -4831,6 +4936,19 @@ void rist_empty_oob_queue(struct rist_common_ctx *ctx)
 		index++;
 	}
 	ctx->oob_queue_bytesize = 0;
+
+	/* drain the oob receive fifo and the last handed-out buffer */
+	while (ctx->oob_rx_queue_read_index != ctx->oob_rx_queue_write_index) {
+		struct rist_buffer *rx_buffer = ctx->oob_rx_queue[ctx->oob_rx_queue_read_index];
+		ctx->oob_rx_queue[ctx->oob_rx_queue_read_index] = NULL;
+		if (rx_buffer)
+			free_rist_buffer(ctx, rx_buffer);
+		ctx->oob_rx_queue_read_index = (uint16_t)(ctx->oob_rx_queue_read_index + 1);
+	}
+	if (ctx->oob_rx_current) {
+		free_rist_buffer(ctx, ctx->oob_rx_current);
+		ctx->oob_rx_current = NULL;
+	}
 }
 
 void rist_receiver_destroy_local(struct rist_receiver *ctx)
@@ -5154,6 +5272,8 @@ void rist_sender_destroy_local(struct rist_sender *ctx)
 	ctx->sender_queue = NULL;
 	free(ctx->seq_index);
 	ctx->seq_index = NULL;
+	free(ctx->seq_rtp_index);
+	ctx->seq_rtp_index = NULL;
 	free(ctx);
 	ctx = NULL;
 }

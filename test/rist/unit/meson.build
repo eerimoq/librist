@@ -115,3 +115,11 @@ test_url_recovery_depth_parse = executable('test_url_recovery_depth_parse',
                                            include_directories : inc,
                                            link_with : librist)
 test('url_recovery_depth_parse', test_url_recovery_depth_parse, suite:['unit'])
+
+# Retransmission sequence-domain predicate (header-only, no link needed):
+# an Advanced head-end serving a Main-downgraded peer must resolve that
+# peer's NACKs in the 16-bit RTP domain, else recovered_packets_total = 0.
+test_retx_seq_domain = executable('test_retx_seq_domain',
+                                  'test_retx_seq_domain.c',
+                                  include_directories : inc)
+test('retx_seq_domain', test_retx_seq_domain, suite:['unit'])
