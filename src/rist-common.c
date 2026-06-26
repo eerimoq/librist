@@ -2806,8 +2806,14 @@ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64
 	    new_peer->receiver_mode || new_peer->receiver_name[0] == '\0')
 		return false;
 
+#if HAVE_SRP_SUPPORT
 	if (!new_peer->eap_ctx || !eap_is_authenticated(new_peer->eap_ctx))
 		return false;
+#else
+	/* No SRP: there is no authenticated per-peer session to gate on, and
+	 * the cname is not a per-peer secret, so reassociation is unsafe. */
+	return false;
+#endif
 
 	uint64_t ka = new_peer->rtcp_keepalive_interval
 	              ? new_peer->rtcp_keepalive_interval

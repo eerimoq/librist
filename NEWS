@@ -87,6 +87,11 @@ Bug Fixes:
     (issue #219).  Adding --blind-send to the usage text pushed the help
     string past the 4095-character C99 string-literal limit; it is now
     split into two literals printed back to back (output unchanged).
+  - Build: fix compilation with SRP support disabled (issue #220).  The
+    listener cname re-association added an unguarded eap_is_authenticated()
+    call whose declaration lives under HAVE_SRP_SUPPORT; the call is now
+    guarded, and without SRP the re-association safely refuses (the cname
+    is not a per-peer secret, so it must not migrate a peer unauthenticated).
 
 
 Changes for 0.2.18:
