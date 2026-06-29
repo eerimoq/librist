@@ -130,18 +130,20 @@ static void test_main_profile_sender(void)
 static void test_out_of_range_clamps(void)
 {
 	/* Use a receiver: it records recovery_queue_max without allocating the
-	 * (potentially huge) ring up front, so we can check the clamp 200 -> MAX
-	 * without depending on the host's overcommit behavior. */
+	 * (potentially huge) ring up front, so we can check the clamp of an
+	 * over-range request without depending on the host's overcommit behavior. */
 	struct rist_ctx *ctx = NULL;
 	if (rist_receiver_create(&ctx, RIST_PROFILE_ADVANCED, NULL) != 0 || !ctx) {
 		fprintf(stderr, "FAIL: could not create advanced receiver (clamp)\n");
 		failures++;
 		return;
 	}
+	/* expect the platform cap, computed with the same helper the library uses */
+	int pmax = rist_recovery_depth_platform_max();
 	CHECK(rist_recovery_depth_set(ctx, 200) == 0, "set(200) (clamped) failed");
-	CHECK(common_max(ctx) == DEPTH_PKTS(RIST_RECOVERY_DEPTH_MAX),
+	CHECK(common_max(ctx) == DEPTH_PKTS(pmax),
 		"clamp: recovery_queue_max=%zu want %zu (depth %d)",
-		common_max(ctx), DEPTH_PKTS(RIST_RECOVERY_DEPTH_MAX), RIST_RECOVERY_DEPTH_MAX);
+		common_max(ctx), DEPTH_PKTS(pmax), pmax);
 	rist_destroy(ctx);
 }
 

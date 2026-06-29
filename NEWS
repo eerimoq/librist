@@ -32,6 +32,10 @@ Bug Fixes:
     repeats on every output cycle on degraded or bonded links.  The flow reset
     that emits it now clears its internal trigger, so a sustained run of late
     packets logs at most one message per reset instead of flooding the log.
+  - recovery-depth: requesting the maximum depth no longer fails on 32-bit
+    platforms.  The effective maximum is capped to what the platform can
+    address (still 16 on 64-bit), with a log message when a request is capped;
+    this also fixes the recovery_depth unit test on 32-bit builds.
   - Advanced<->Main retransmissions are now resolved correctly.  An
     Advanced-profile sender indexes its retransmit buffer by the 32-bit
     advanced sequence, but a peer that negotiated down to Main (TR-06-3: an

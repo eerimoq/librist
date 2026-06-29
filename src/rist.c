@@ -840,16 +840,19 @@ int rist_recovery_rtt_multiplier_set(struct rist_ctx *ctx, int multiplier)
 	return rist_recovery_rtt_multiplier_set_internal(cctx, multiplier);
 }
 
-/* Translate a recovery-depth exponent into the ring capacity in packets:
- * (65536 << depth). depth is clamped to [MIN, MAX]. Returned as uint64_t
- * because the top of the range (depth 16) is 2^32, which overflows a 32-bit
- * size_t; the apply path rejects any size this platform cannot index. */
+/* Translate a recovery-depth exponent into ring capacity in packets
+ * (65536 << depth), clamped to [MIN, MAX] and to the platform maximum
+ * (rist_recovery_depth_platform_max) so the result always fits size_t.
+ * Returned as uint64_t so the arithmetic is exact regardless of size_t width. */
 static uint64_t rist_recovery_depth_to_packets(int depth)
 {
 	if (depth < RIST_RECOVERY_DEPTH_MIN)
 		depth = RIST_RECOVERY_DEPTH_MIN;
 	if (depth > RIST_RECOVERY_DEPTH_MAX)
 		depth = RIST_RECOVERY_DEPTH_MAX;
+	int platform_max = rist_recovery_depth_platform_max();
+	if (depth > platform_max)
+		depth = platform_max;
 	return (uint64_t)UINT16_SIZE << depth;
 }
 
@@ -930,6 +933,14 @@ int rist_recovery_depth_set(struct rist_ctx *ctx, uint8_t depth)
 			"recovery depth %u out of range, clamping to %u\n",
 			(unsigned)depth, (unsigned)RIST_RECOVERY_DEPTH_MAX);
 		depth = RIST_RECOVERY_DEPTH_MAX;
+	}
+
+	int platform_max = rist_recovery_depth_platform_max();
+	if (depth > platform_max) {
+		rist_log_priv(cctx, RIST_LOG_WARN,
+			"recovery depth %u exceeds what this platform can address, "
+			"capping to %d\n", (unsigned)depth, platform_max);
+		depth = platform_max;
 	}
 
 	return rist_recovery_depth_apply(ctx, cctx, rist_recovery_depth_to_packets(depth));
