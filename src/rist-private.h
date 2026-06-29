@@ -138,6 +138,22 @@ struct rist_buffer {
 	bool retry_queued;
 };
 
+/* Largest recovery depth whose ring (UINT16_SIZE << depth packets) is
+ * addressable as size_t: the two parallel index arrays cost
+ * sizeof(ptr) + sizeof(uint32_t) per slot. Depth 16 (2^32) only fits a 64-bit
+ * size_t; on a 32-bit size_t the exponent is reduced until it fits. Shared with
+ * the recovery-depth unit test. */
+static inline int rist_recovery_depth_platform_max(void)
+{
+	const uint64_t per = (uint64_t)sizeof(struct rist_buffer *) + sizeof(uint32_t);
+	const uint64_t limit = (uint64_t)SIZE_MAX / per;
+	int depth = RIST_RECOVERY_DEPTH_MAX;
+	while (depth > RIST_RECOVERY_DEPTH_MIN &&
+	       ((uint64_t)UINT16_SIZE << depth) > limit)
+		depth--;
+	return depth;
+}
+
 struct rist_missing_buffer {
 	uint32_t seq;
 	uint64_t next_nack;
