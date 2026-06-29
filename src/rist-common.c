@@ -1130,6 +1130,8 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 						drop = true;
 						if (f->too_late_ctr > 100) {
 							rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Too many old packets, resetting buffer\n");
+							/* clear the latch, else it re-fires every output cycle */
+							f->too_late_ctr = 0;
 							f->receiver_queue_has_items = false;
 							return;
 						}

@@ -28,6 +28,10 @@ Features:
     where the heavy direction is forward and the reverse is light.
 
 Bug Fixes:
+  - Receiver: the "Too many old packets, resetting buffer" error no longer
+    repeats on every output cycle on degraded or bonded links.  The flow reset
+    that emits it now clears its internal trigger, so a sustained run of late
+    packets logs at most one message per reset instead of flooding the log.
   - Advanced<->Main retransmissions are now resolved correctly.  An
     Advanced-profile sender indexes its retransmit buffer by the 32-bit
     advanced sequence, but a peer that negotiated down to Main (TR-06-3: an
