@@ -1259,7 +1259,7 @@ static int rist_receiver_peer_create(struct rist_receiver *ctx,
 			return -1;
 		}
 
-		sprintf((char *)config->address, "%s:%d", p->url, p->local_port + 1);
+		snprintf((char *)config->address, sizeof(config->address), "%s:%d", p->url, p->local_port + 1);
 		p_rtcp = rist_receiver_peer_insert_local(ctx, config);
 		p_rtcp->peer_ssrc = p->peer_ssrc;
 		if (!p_rtcp)

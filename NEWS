@@ -27,6 +27,19 @@ Features:
     callback.  Intended for low-bandwidth, NAT-friendly control tunnels
     where the heavy direction is forward and the reverse is light.
 
+Fable 5 security audit:
+  - URL parsing: a malformed UDP URL no longer triggers an out-of-bounds
+    write while extracting the scheme prefix.  A URL beginning with '/'
+    underflowed the copy length and NUL-padded far past the 16-byte prefix
+    buffer; a scheme longer than 15 characters wrote the terminator out of
+    bounds.  Both the copy length and terminator index are now clamped.
+    Reachable via rist_parse_udp_address()/rist_parse_udp_address2() and the
+    ristsender/ristreceiver/udp2udp -i/-o URLs.  Covered by
+    test/rist/unit/test_url_udp_prefix_parse.
+  - URL parsing: building the Simple-profile RTCP peer address now uses a
+    bounded formatter, so a long input URL cannot overflow the peer-config
+    address buffer.
+
 Bug Fixes:
   - Receiver: the "Too many old packets, resetting buffer" error no longer
     repeats on every output cycle on degraded or bonded links.  The flow reset
