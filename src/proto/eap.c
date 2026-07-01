@@ -69,6 +69,10 @@ struct eapsrp_ctx
     uint64_t failed_state_timestamp; /* 0 = not in soft-FAILED */
     uint64_t last_identity_reply_timestamp; /* rate-limit pre-auth IDENTITY replies */
 
+    /* Authenticatee-only bounded EAPOL START retransmit; 0 = idle. */
+    uint64_t authee_start_timer;
+    int authee_start_tries;
+
     uint64_t passphrase_request_timer;
     int passphrase_request_times;
     uint8_t passphrase_request_identifier;
@@ -821,10 +825,10 @@ int eap_request_identity(struct eapsrp_ctx *ctx)
 	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, 1, outpkt, ctx->eapversion3? 3 :2);
 }
 
-int _librist_proto_eap_start(struct eapsrp_ctx *ctx)
+/* EAPOL is exempt from encryption, so START still reaches a peer that has
+ * lost our session key (e.g. a restarted authenticator). */
+static int eap_send_start_pkt(struct eapsrp_ctx *ctx)
 {
-	if (ctx->authentication_state == EAP_AUTH_STATE_SUCCESS)
-		ctx->authentication_state = EAP_AUTH_STATE_REAUTH;
 	struct eapol_hdr eapol;
 	eapol.eapversion = 3;
 	eapol.eaptype = EAPOL_TYPE_START;
@@ -832,6 +836,57 @@ int _librist_proto_eap_start(struct eapsrp_ctx *ctx)
 	if (_librist_proto_gre_send_data(ctx->peer, 0, RIST_GRE_PROTOCOL_TYPE_EAPOL, (uint8_t*)&eapol, sizeof(eapol), 0, 0, ctx->peer->rist_gre_version) < 0)
 		return -1;
 	return 0;
+}
+
+int _librist_proto_eap_start(struct eapsrp_ctx *ctx)
+{
+	if (ctx->authentication_state == EAP_AUTH_STATE_SUCCESS)
+		ctx->authentication_state = EAP_AUTH_STATE_REAUTH;
+	int ret = eap_send_start_pkt(ctx);
+	/* Authenticatees have no other periodic START driver; arm the bounded
+	 * retransmit (eap_periodic_impl). Inbound EAP re-arms it. */
+	if (ctx->config.role == EAP_ROLE_AUTHENTICATEE) {
+		ctx->authee_start_timer = timestampNTP_u64();
+		ctx->authee_start_tries = 0;
+	}
+	return ret;
+}
+
+/* Force an authenticatee (caller/supplicant) to re-run the full SRP
+ * handshake from scratch and re-initiate it right now.
+ *
+ * Used after a caller socket rebind (NAT source-port change or a peer
+ * restart): the previously authenticated session is bound to the old
+ * source tuple and to per-session crypto the far end no longer has (a
+ * restarted listener has forgotten everything). Keeping the stale
+ * SUCCESS state would leave us sending data the authenticator drops as
+ * unauthenticated, and the authenticator-driven re-auth never fires for
+ * a peer it does not know about. So drop all per-session state back to
+ * UNAUTH and send a fresh EAPOL START, exactly as on a cold connect, so
+ * the authenticator challenges us immediately on the new socket.
+ *
+ * Authenticator contexts are left untouched (re-auth there is driven by
+ * eap_periodic and the listener-side reassociation path). */
+void eap_reset_authenticatee(struct eapsrp_ctx *ctx)
+{
+	if (ctx == NULL)
+		return;
+	pthread_mutex_lock(&ctx->eap_lock);
+	if (ctx->config.role == EAP_ROLE_AUTHENTICATEE) {
+		eap_reset_data(ctx);        /* frees client crypto, authenticated=false */
+		ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
+		ctx->tries = 0;             /* clear any parked failure count */
+		ctx->timeout_retries = 0;
+		ctx->failed_state_timestamp = 0;
+		ctx->last_identity_reply_timestamp = 0; /* don't rate-limit the fresh handshake */
+		ctx->last_identifier = 0;
+		ctx->did_first_auth = false;/* install the new session key as a first auth */
+		if (_librist_proto_eap_start(ctx) < 0)
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
+				EAP_LOG_PREFIX"Failed to send EAPOL START after socket rebind; "
+				"periodic retransmit will retry\n");
+	}
+	pthread_mutex_unlock(&ctx->eap_lock);
 }
 
 void eap_set_ip_string(struct eapsrp_ctx *ctx, char ip_string[])
@@ -918,6 +973,17 @@ int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 		default:
 			break;
 	}
+	/* Far end is engaged: while still handshaking (UNAUTH) push the START
+	 * retransmit timer out so it only fires on true silence; once
+	 * authenticated, disarm it. */
+	if (ctx->config.role == EAP_ROLE_AUTHENTICATEE) {
+		if (ctx->authentication_state == EAP_AUTH_STATE_UNAUTH) {
+			ctx->authee_start_timer = timestampNTP_u64();
+			ctx->authee_start_tries = 0;
+		} else {
+			ctx->authee_start_timer = 0;
+		}
+	}
 	pthread_mutex_unlock(&ctx->eap_lock);
 	return ret;
 }
@@ -938,6 +1004,23 @@ static void eap_periodic_impl(struct eapsrp_ctx *ctx)
 	uint64_t now = timestampNTP_u64();
 	uint64_t retry_period = EAP_AUTH_TIMEOUT * RIST_CLOCK;
 	uint64_t reauth_period = EAP_REAUTH_PERIOD * RIST_CLOCK;//3 seconds
+
+	/* Retransmit START while stuck UNAUTH and the authenticator is silent
+	 * (e.g. a restarted listener that missed our first START). Bounded; when
+	 * exhausted the caller-side socket rebind re-arms us on its next cycle. */
+	if (ctx->config.role == EAP_ROLE_AUTHENTICATEE &&
+	    ctx->authentication_state == EAP_AUTH_STATE_UNAUTH &&
+	    ctx->authee_start_timer != 0 &&
+	    now > ctx->authee_start_timer + retry_period) {
+		if (ctx->authee_start_tries >= EAP_AUTH_TIMEOUT_RETRY_MAX) {
+			ctx->authee_start_timer = 0;
+		} else {
+			eap_send_start_pkt(ctx);
+			ctx->authee_start_timer = now;
+			ctx->authee_start_tries++;
+		}
+	}
+
 	if (ctx->authentication_state == EAP_AUTH_STATE_SUCCESS && ctx->passphrase_request_timer != 0 && ctx->passphrase_request_timer + retry_period < now) {
 		if (ctx->passphrase_request_times > EAP_AUTH_TIMEOUT_RETRY_MAX) {
 			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN, EAP_LOG_PREFIX"Failed to receive requested passphrase in a timely manner\n");

@@ -1724,6 +1724,19 @@ void rist_peer_authenticate(struct rist_peer *peer)
 	if (peer->peer_data)
 		peer->peer_data->authenticated = true;
 
+	/* Re-auth means any prior caller rebind converged; clear the backoff so
+	 * the next outage retries promptly instead of from an ever-growing gap. */
+	peer->rebind_attempts = 0;
+	peer->last_rebind_time = 0;
+	if (peer->peer_data) {
+		peer->peer_data->rebind_attempts = 0;
+		peer->peer_data->last_rebind_time = 0;
+	}
+	if (peer->peer_rtcp) {
+		peer->peer_rtcp->rebind_attempts = 0;
+		peer->peer_rtcp->last_rebind_time = 0;
+	}
+
 	rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
 			"Successfully Authenticated peer %"PRIu32"\n", peer->adv_peer_id);
 }
@@ -2875,9 +2888,13 @@ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64
 }
 
 /* Receiver-caller socket rebind on a NAT source-port rebind / sender
- * silence.  Plaintext and shared-PSK callers; SRP callers recover via
- * the listener-side reassociation path.  Linear backoff capped at
- * REBIND_BACKOFF_CAP. */
+ * silence.  Plaintext, shared-PSK and EAP-SRP callers.  SRP callers
+ * additionally reset their EAP state and re-initiate the handshake on
+ * the fresh socket (see below) so recovery does not depend on the
+ * listener still holding the old authenticated session -- which never
+ * works for a NAT'd caller after the listener restarts, because the
+ * hub cannot reach back through the NAT to drive the listener-side
+ * reassociation path.  Linear backoff capped at REBIND_BACKOFF_CAP. */
 #define REBIND_BACKOFF_CAP 10
 static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
 {
@@ -2889,9 +2906,6 @@ static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
 	if (cctx->profile <= RIST_PROFILE_SIMPLE)
 		return false;
 	if (peer->config.local_port != 0)
-		return false;
-	/* SRP recovers via the listener-side reassociation path. */
-	if (peer->eap_ctx != NULL)
 		return false;
 
 	/* Require silence beyond max(session_timeout, 4*keepalive) so a
@@ -2949,6 +2963,17 @@ static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
 	peer->next_keepalive_packet = now;
 	peer->send_keepalive = true;
 	peer->send_first_connection_event = false;
+
+#if HAVE_SRP_SUPPORT
+	/* SRP callers: the authenticated session is bound to the old source
+	 * tuple and (after a listener restart) to state the far end no longer
+	 * has.  Reset EAP back to UNAUTH and re-send EAPOL START on the new
+	 * socket so the authenticator re-challenges us immediately, exactly as
+	 * on a cold connect.  Non-SRP callers just resume via the keepalives
+	 * armed above. */
+	if (peer->eap_ctx != NULL)
+		eap_reset_authenticatee(peer->eap_ctx);
+#endif
 
 	peer->rebind_attempts++;
 	peer->last_rebind_time = now;

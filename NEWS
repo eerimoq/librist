@@ -118,6 +118,16 @@ Bug Fixes:
     datagrams (seen as Udp: RcvbufErrors) while the single protocol thread
     drains the socket.  Hosts with a small rmem_max fall back to the prior
     1 MB / 200 KB behaviour and are unaffected.
+  - EAP-SRP: a single-port/NAT'd caller whose listener restarts now recovers on
+    its own.  Previously SRP callers were excluded from the silent caller socket
+    rebind, so once the listener lost all session state the caller sat idle
+    until an operator restarted it.  The caller now resets its EAP context and
+    re-authenticates on a fresh socket; the supplicant also retransmits its
+    EAPOL START while the far end is silent, so a restarted listener that missed
+    the first START still challenges it.  The rebind backoff resets once a peer
+    re-authenticates, so a later outage retries promptly instead of after an
+    ever-growing gap.  Covered by the srp mode of
+    test/rist/test_caller_socket_rebind.
 
 
 Changes for 0.2.18:

@@ -163,6 +163,13 @@ if have_srp
 	# One bonded SRP leg rebinds mid-stream while the other stays alive.
 	test('Multipath one leg rebinds mid-stream (srp)', test_multipath_leg_rebind,
 	     suite: ['regression', 'nat', 'multipath', 'srp'], timeout: 120)
+	# Regression for the EAP-SRP no-rebind bug: an SRP caller whose
+	# listener restarts (all session state lost) must reset EAP and
+	# re-authenticate on the fresh socket by itself, with no operator
+	# intervention.  Before the fix the SRP caller was killed and stayed
+	# idle forever.
+	test('Receiver caller socket rebind on silence (srp)', test_caller_socket_rebind,
+	     args: ['srp'], suite: ['regression', 'nat', 'srp'], timeout: 120)
 endif
 
 ###?profile= URL override tests (rist_*_create profile != URL profile)
