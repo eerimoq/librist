@@ -109,6 +109,14 @@ test_recovery_depth = executable('test_recovery_depth',
                                  dependencies : [threads, stdatomic_dependency])
 test('recovery_depth', test_recovery_depth, suite:['unit'])
 
+# udp:// scheme-prefix parsing: guards prefix[16] against copy-length
+# underflow (leading '/') and out-of-bounds NUL write (over-long scheme).
+test_url_udp_prefix_parse = executable('test_url_udp_prefix_parse',
+                                       'test_url_udp_prefix_parse.c',
+                                       include_directories : inc,
+                                       link_with : librist)
+test('url_udp_prefix_parse', test_url_udp_prefix_parse, suite:['unit'])
+
 # ?recovery-depth= URL parsing exercised through the public API.
 test_url_recovery_depth_parse = executable('test_url_recovery_depth_parse',
                                            'test_url_recovery_depth_parse.c',

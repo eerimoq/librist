@@ -68,8 +68,12 @@ int parse_url_udp_options(const char* url, struct rist_udp_config *output_udp_co
 	query = strchr( tmp_url, '/' );
 	if (query != NULL) {
 		prefix_len = (uint32_t)(query - tmp_url);
-		strncpy((void *)output_udp_config->prefix, tmp_url, prefix_len >= 16 ? 15 : prefix_len - 1);
-		output_udp_config->prefix[prefix_len] = '\0';
+		/* clamp copy length and terminator to prefix[]; prefix_len may be 0 */
+		size_t prefix_copy = prefix_len > 0 ? (size_t)(prefix_len - 1) : 0;
+		if (prefix_copy > sizeof(output_udp_config->prefix) - 1)
+			prefix_copy = sizeof(output_udp_config->prefix) - 1;
+		memcpy((void *)output_udp_config->prefix, tmp_url, prefix_copy);
+		output_udp_config->prefix[prefix_copy] = '\0';
 		// Convert to lower
 		char *p =(char *)output_udp_config->prefix;
 		for(i = 0; i < 16; i++)
