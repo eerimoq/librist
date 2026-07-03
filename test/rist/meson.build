@@ -170,6 +170,22 @@ if have_srp
 	# idle forever.
 	test('Receiver caller socket rebind on silence (srp)', test_caller_socket_rebind,
 	     args: ['srp'], suite: ['regression', 'nat', 'srp'], timeout: 120)
+	# Regression for the bonded EAP-SRP sender-leg flap bug (issue #224).
+	# A bonded caller's leg is silenced (100% loss both ways) with its
+	# interface left UP, so its miface-bound socket persists on the same
+	# source tuple; the listener purges the timed-out leg while the other
+	# leg keeps the bond alive.  When the loss clears the caller must reset
+	# EAP and re-authenticate the leg on its own -- before the fix it
+	# stayed wedged in stale EAP SUCCESS forever.  This needs real
+	# interfaces + tc packet loss (a loopback leg has no miface binding and
+	# self-heals via a new-port handshake, hiding the bug), so it runs only
+	# on Linux as root with netns/tc and cleanly SKIPs (exit 77) otherwise.
+	if get_option('built_tools')
+		test('Bonded SRP leg re-authenticates after a same-tuple flap (srp, netns)',
+		     find_program('test_bonded_leg_flap_netns.sh'),
+		     args: [ristsender_exe, ristreceiver_exe],
+		     suite: ['netns', 'nat', 'multipath', 'srp'], timeout: 120)
+	endif
 endif
 
 ###?profile= URL override tests (rist_*_create profile != URL profile)

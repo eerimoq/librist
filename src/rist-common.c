@@ -2891,21 +2891,18 @@ static bool try_listener_reassociate_by_cname(struct rist_peer *new_peer, uint64
 	return true;
 }
 
-/* Receiver-caller socket rebind on a NAT source-port rebind / sender
- * silence.  Plaintext, shared-PSK and EAP-SRP callers.  SRP callers
- * additionally reset their EAP state and re-initiate the handshake on
- * the fresh socket (see below) so recovery does not depend on the
- * listener still holding the old authenticated session -- which never
- * works for a NAT'd caller after the listener restarts, because the
- * hub cannot reach back through the NAT to drive the listener-side
- * reassociation path.  Linear backoff capped at REBIND_BACKOFF_CAP. */
+/* Caller-side recovery when a peer goes silent past session_timeout.
+ * Receiver-mode callers rebind the local socket (NAT rebind / listener
+ * restart); SRP callers also reset EAP and re-handshake on the fresh socket.
+ * Sender-mode callers only reach the SRP path: their miface-bound socket
+ * survives a flap, so they reset EAP without rebinding (see the branches).
+ * Linear backoff capped at REBIND_BACKOFF_CAP. */
 #define REBIND_BACKOFF_CAP 10
 static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
 {
 	struct rist_common_ctx *cctx = get_cctx(peer);
 	if (!peer || peer->parent || peer->listening ||
-	    !peer->receiver_mode || peer->multicast_sender ||
-	    peer->multicast_receiver)
+	    peer->multicast_sender || peer->multicast_receiver)
 		return false;
 	if (cctx->profile <= RIST_PROFILE_SIMPLE)
 		return false;
@@ -2931,6 +2928,42 @@ static bool try_caller_socket_rebind(struct rist_peer *peer, uint64_t now)
 	if (peer->last_rebind_time != 0 && now > peer->last_rebind_time &&
 	    (now - peer->last_rebind_time) < min_gap)
 		return false;
+
+	if (!peer->receiver_mode) {
+#if HAVE_SRP_SUPPORT
+		/* Sender-mode leg: the miface-bound socket survives a flap, so
+		 * don't rebind it -- just reset EAP and re-drive the handshake on
+		 * the existing socket.  Only SRP deadlocks like this; plaintext/PSK
+		 * recover via normal reconnect.
+		 *
+		 * De-authenticate the leg so it drops out of the weighted sender
+		 * balancing while it is silent (the balancer keeps a leg in rotation
+		 * only while authenticated) and re-drives the connection handshake.
+		 * eap_authentication_state is rewound to 1 so the "EAP Authentication
+		 * succeeded" transition fires again when re-auth completes; that path
+		 * restores authenticated and folds the leg back into the bond at full
+		 * weight (without this, the leg re-authenticates but never rejoins
+		 * balancing, streaming only NACK retransmits). */
+		if (peer->eap_ctx == NULL)
+			return false;
+		peer->authenticated = false;
+		peer->eap_authentication_state = 1;
+		peer->dead = 0;
+		peer->timed_out = 0;
+		peer->last_pkt_received = now;
+		eap_reset_authenticatee(peer->eap_ctx);
+		peer->rebind_attempts++;
+		peer->last_rebind_time = now;
+		rist_log_priv(cctx, RIST_LOG_WARN,
+		    "Sender caller peer %"PRIu32" silent past session_timeout "
+		    "(attempt %"PRIu32"); reset EAP and re-initiated the SRP "
+		    "handshake to recover the leg without operator intervention.\n",
+		    peer->adv_peer_id, peer->rebind_attempts);
+		return true;
+#else
+		return false;
+#endif
+	}
 
 	struct evsocket_ctx *evctx = cctx->evctx;
 	int old_sd = peer->sd;
@@ -3931,6 +3964,13 @@ protocol_bypass:
 					rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
 						"Peer %d EAP Authentication succeeded\n", peer->adv_peer_id);
 					p->eap_authentication_state = 2;
+					/* A caller-sender leg that re-authenticated after going
+					 * silent (see try_caller_socket_rebind) cleared its
+					 * connection-level authenticated flag to leave the bond
+					 * while down.  Restore it now so the weighted balancer
+					 * folds the leg back in at full weight. */
+					if (!p->receiver_mode && !p->listening && !p->authenticated)
+						rist_peer_authenticate(p);
 					//First authentication, so send keepalive
 					_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
 					_librist_proto_gre_send_keepalive(p, p->rist_gre_version);
