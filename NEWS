@@ -41,6 +41,18 @@ Fable 5 security audit:
     address buffer.
 
 Bug Fixes:
+  - EAP-SRP: a bonded caller-sender leg that goes silent and then resumes on
+    the same source tuple (an interface flap or upstream outage that comes
+    back without a reconnect) no longer stays wedged (issue #224).  While the
+    leg was silent the far-end authenticator timed out and purged its session,
+    but the caller kept its still-valid miface-bound socket and stayed in EAP
+    SUCCESS, so it streamed data the authenticator now dropped while waiting
+    for an EAPOL START the caller never sent; the leg never rejoined the bond
+    without an operator restart.  A caller-sender leg silent past
+    session_timeout now resets EAP and re-runs the SRP handshake on its
+    existing socket; once it re-authenticates it is folded back into the
+    weighted balancing rotation, so it resumes carrying its full share of the
+    bond on its own instead of lingering as an authenticated-but-idle leg.
   - Receiver: the "Too many old packets, resetting buffer" error no longer
     repeats on every output cycle on degraded or bonded links.  The flow reset
     that emits it now clears its internal trigger, so a sustained run of late
