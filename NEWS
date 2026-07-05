@@ -10,6 +10,10 @@ Changes for 0.2.19-rc1:
 ---------------------------------
 
 Features:
+  - TUN tools (risttunnel -l) and rist_tun_set_ip() now accept IPv6 local
+    addresses with prefix lengths up to /128 (e.g. fd00::1/64). Linux uses
+    rtnetlink RTM_NEWADDR; macOS uses in6_aliasreq. IPv4 behaviour is
+    unchanged.
   - rist_oob_read() is now implemented.  When out-of-band data is enabled
     without a callback (rist_oob_callback_set with a NULL callback), incoming
     OOB packets are queued and can be drained by polling rist_oob_read(), as
