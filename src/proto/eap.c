@@ -38,6 +38,7 @@
 #define EAP_REAUTH_PERIOD 60000 // ms
 #define EAP_AUTH_FAILED_RECOVERY 30000 // ms, soft-FAILED -> UNAUTH after this quiet
 #define EAP_IDENTITY_REPLY_INTERVAL 200 // ms, rate-limit pre-auth IDENTITY replies
+#define EAP_REAUTH_PROBE_MAX 2000 // ms, forget a stale authenticated-side identity-request probe after this gap
 #define EAP_MAX_MODULUS_BYTES 1024 // largest RFC 5054 group (NG_8192) is 1024 bytes
 
 /* Permanent-failure sentinel for ctx->tries; fixed point under eap_tries_inc(). */
@@ -72,6 +73,11 @@ struct eapsrp_ctx
     /* Authenticatee-only bounded EAPOL START retransmit; 0 = idle. */
     uint64_t authee_start_timer;
     int authee_start_tries;
+
+    /* Authenticatee-only: start of the current run of identity requests seen
+     * while already authenticated; 0 = none in progress. Gates re-auth after
+     * an authenticator restart without honoring a lone forged reset packet. */
+    uint64_t reauth_probe_timer;
 
     uint64_t passphrase_request_timer;
     int passphrase_request_times;
@@ -192,11 +198,19 @@ static int process_eap_request_identity(struct eapsrp_ctx *ctx, uint8_t identifi
 {
 	if (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
 		return EAP_UNEXPECTEDREQUEST;
-	/* Refuse pre-auth resets once authenticated; re-auth runs from eap_periodic. */
-	if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS)
-		return EAP_UNEXPECTEDREQUEST;
-	/* Rate-limit pre-auth replies (caps username echo + eap_reset_data work). */
 	uint64_t now = timestampNTP_u64();
+	/* An identity request while authenticated is either a forged reset or a sign
+	 * the authenticator lost our session; we can't tell on the wire. Don't tear
+	 * down inline (a lone forged packet must not): arm reauth_probe_timer and
+	 * keep refusing, letting eap_periodic_impl drive one bounded re-auth if it
+	 * persists. */
+	if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS) {
+		if (ctx->reauth_probe_timer == 0 ||
+		    now - ctx->reauth_probe_timer > (uint64_t)EAP_REAUTH_PROBE_MAX * RIST_CLOCK)
+			ctx->reauth_probe_timer = now;
+		return EAP_UNEXPECTEDREQUEST;
+	}
+	/* Rate-limit pre-auth replies (caps username echo + eap_reset_data work). */
 	if (ctx->last_identity_reply_timestamp != 0 &&
 	    now < ctx->last_identity_reply_timestamp + (uint64_t)EAP_IDENTITY_REPLY_INTERVAL * RIST_CLOCK) {
 		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
@@ -951,13 +965,19 @@ int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 			ret = process_eap_pkt(ctx, &pkt[sizeof(*hdr)], body_len, eap_version);
 			break;
 		case EAPOL_TYPE_START:
-			if (ctx->config.role == EAP_ROLE_AUTHENTICATOR && !ctx->last_pkt)
-				ret =  eap_request_identity(ctx);
-			if (ctx->config.role == EAP_ROLE_AUTHENTICATOR && ctx->authentication_state == EAP_AUTH_STATE_SUCCESS) {
-				ctx->authentication_state = EAP_AUTH_STATE_REAUTH;
-                ret = eap_request_identity(ctx);
-            } else
+			/* START (re)drives the handshake; only an authenticatee sends it.
+			 * Always re-challenge with IDENTITY and reset the retransmit
+			 * bookkeeping so a caller recovering from a restart or rebind is
+			 * driven anew rather than ignored for a stale last_pkt. */
+			if (ctx->config.role == EAP_ROLE_AUTHENTICATOR) {
+				if (ctx->authentication_state == EAP_AUTH_STATE_SUCCESS)
+					ctx->authentication_state = EAP_AUTH_STATE_REAUTH;
+				ctx->tries = 0;
+				ctx->timeout_retries = 0;
+				ret = eap_request_identity(ctx);
+			} else {
 				ret = 0;
+			}
 			break;
 		case EAPOL_TYPE_LOGOFF:
 			/* Refuse LOGOFF once authenticated; re-auth runs from eap_periodic. */
@@ -1004,6 +1024,30 @@ static void eap_periodic_impl(struct eapsrp_ctx *ctx)
 	uint64_t now = timestampNTP_u64();
 	uint64_t retry_period = EAP_AUTH_TIMEOUT * RIST_CLOCK;
 	uint64_t reauth_period = EAP_REAUTH_PERIOD * RIST_CLOCK;//3 seconds
+
+	/* Authenticator-restart recovery: once the identity-request probe armed by
+	 * process_eap_request_identity has persisted one retry period, drop to UNAUTH
+	 * and re-run the SRP handshake (bounds a lone forged packet to one re-auth). */
+	if (ctx->config.role == EAP_ROLE_AUTHENTICATEE &&
+	    ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS &&
+	    ctx->reauth_probe_timer != 0 &&
+	    now > ctx->reauth_probe_timer + retry_period) {
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO,
+			EAP_LOG_PREFIX"Authenticator re-requested identity while authenticated "
+			"(it likely restarted); re-authenticating\n");
+		ctx->reauth_probe_timer = 0;
+		eap_reset_data(ctx);
+		ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
+		ctx->tries = 0;
+		ctx->timeout_retries = 0;
+		ctx->failed_state_timestamp = 0;
+		ctx->last_identity_reply_timestamp = 0;
+		ctx->did_first_auth = false;
+		if (_librist_proto_eap_start(ctx) < 0)
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
+				EAP_LOG_PREFIX"Failed to send EAPOL START for re-auth; "
+				"periodic retransmit will retry\n");
+	}
 
 	/* Retransmit START while stuck UNAUTH and the authenticator is silent
 	 * (e.g. a restarted listener that missed our first START). Bounded; when

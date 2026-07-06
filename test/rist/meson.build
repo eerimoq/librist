@@ -112,6 +112,17 @@ test_caller_socket_rebind = executable('test_caller_socket_rebind',
                                            stdatomic_dependency
                                        ])
 
+test_eap_authenticator_restart = executable('test_eap_authenticator_restart',
+                                       'test_eap_authenticator_restart.c',
+                                       extra_sources,
+                                       include_directories: inc,
+                                       link_with: librist,
+                                       dependencies: [
+                                           threads,
+                                           tools_dependencies,
+                                           stdatomic_dependency
+                                       ])
+
 
 test_oob_read = executable('test_oob_read',
                            'test_oob_read.c',
@@ -170,6 +181,14 @@ if have_srp
 	# idle forever.
 	test('Receiver caller socket rebind on silence (srp)', test_caller_socket_rebind,
 	     args: ['srp'], suite: ['regression', 'nat', 'srp'], timeout: 120)
+	# Regression for the EAP-SRP re-auth lockout after an *authenticator*
+	# (listener/hub) restart: the fresh authenticator re-challenges with
+	# IDENTITY, but a caller parked in EAP SUCCESS refused it forever, so the
+	# hub sat in "Waiting for EAP" and carried 0 packets.  Distinct from the
+	# silence rebind above (the authenticator is NOT silent here); recovery
+	# must come from the identity-request re-auth path.
+	test('EAP-SRP caller re-auth after authenticator restart (srp)', test_eap_authenticator_restart,
+	     suite: ['regression', 'srp'], timeout: 120)
 	# Regression for the bonded EAP-SRP sender-leg flap bug (issue #224).
 	# A bonded caller's leg is silenced (100% loss both ways) with its
 	# interface left UP, so its miface-bound socket persists on the same

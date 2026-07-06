@@ -6,7 +6,7 @@ Recommendations TR-06-1 (Simple Profile), TR-06-2 (Main Profile),
 and TR-06-3 (Advanced Profile).
 
 
-Changes for 0.2.19-rc1:
+Changes for 0.2.19-rc2:
 ---------------------------------
 
 Features:
@@ -57,6 +57,15 @@ Bug Fixes:
     existing socket; once it re-authenticates it is folded back into the
     weighted balancing rotation, so it resumes carrying its full share of the
     bond on its own instead of lingering as an authenticated-but-idle leg.
+  - EAP-SRP: a caller now re-authenticates on its own after the authenticator
+    (listener/hub) restarts.  A restarted authenticator loses all session state
+    and re-challenges previously-authenticated callers with EAP-Request/Identity,
+    but a caller parked in EAP SUCCESS refused that request and a freshly
+    restarted authenticator ignored the caller's recovery START, so the peer sat
+    in "Waiting for EAP authentication" and carried no data until an operator
+    restarted the caller.  A persistent identity request while authenticated now
+    drives one bounded re-run of the SRP handshake, and the authenticator
+    re-challenges on every START, so the session recovers without intervention.
   - Receiver: the "Too many old packets, resetting buffer" error no longer
     repeats on every output cycle on degraded or bonded links.  The flow reset
     that emits it now clears its internal trigger, so a sustained run of late
