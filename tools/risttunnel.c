@@ -171,7 +171,7 @@ static void usage(const char *name)
 		"IP tunnel over RIST with ARQ packet recovery\n\n"
 		"Usage: %s [options]\n\n"
 		"Required:\n"
-		"  -l, --local-ip IP/PREFIX    Local tunnel IP (e.g. 10.0.0.1/24)\n"
+		"  -l, --local-ip IP/PREFIX    Local tunnel IP (e.g. 10.0.0.1/24 or fd00::1/64)\n"
 		"  -o, --output-url URL        RIST URL for sending\n"
 		"  -b, --input-url URL         RIST URL for receiving\n\n"
 		"Optional:\n"
@@ -204,25 +204,7 @@ static void usage(const char *name)
 
 static int parse_ip_prefix(const char *cidr, char *ip_out, size_t ip_len, int *prefix_out)
 {
-	const char *slash = strchr(cidr, '/');
-	if (!slash) {
-		strncpy(ip_out, cidr, ip_len - 1);
-		*prefix_out = 32;
-		return 0;
-	}
-
-	size_t ip_part_len = (size_t)(slash - cidr);
-	if (ip_part_len >= ip_len)
-		return -1;
-
-	memcpy(ip_out, cidr, ip_part_len);
-	ip_out[ip_part_len] = '\0';
-	*prefix_out = atoi(slash + 1);
-
-	if (*prefix_out < 0 || *prefix_out > 32)
-		return -1;
-
-	return 0;
+	return rist_tun_parse_cidr(cidr, ip_out, ip_len, prefix_out);
 }
 
 int main(int argc, char *argv[])

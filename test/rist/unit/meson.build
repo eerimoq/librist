@@ -131,3 +131,10 @@ test_retx_seq_domain = executable('test_retx_seq_domain',
                                   'test_retx_seq_domain.c',
                                   include_directories : inc)
 test('retx_seq_domain', test_retx_seq_domain, suite:['unit'])
+
+# TUN CIDR parsing (IPv4 + IPv6) used by risttunnel -l.
+test_tun_cidr_parse = executable('test_tun_cidr_parse',
+                                 'test_tun_cidr_parse.c',
+                                 include_directories : inc,
+                                 link_with : librist)
+test('tun_cidr_parse', test_tun_cidr_parse, suite:['unit'])
