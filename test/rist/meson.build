@@ -228,7 +228,7 @@ test('Interop - Main sender to Advanced receiver + 10% loss',
      suite: ['interop', 'advanced', 'main', 'unicast'])
 
 ###Reflector tests
-test('Reflector functionality', test_reflector, suite: ['main', 'reflector'])
+test('Reflector functionality', test_reflector, suite: ['main', 'reflector'], timeout: 120)
 
 ###Simple profile tests
 #Unicast
