@@ -975,15 +975,17 @@ int rist_stats_free(const struct rist_stats *stats_container)
 
 uint32_t rist_peer_get_id(const struct rist_peer *peer)
 {
+    if (!peer)
+        return 0;
     return peer->adv_peer_id;
 }
 
 uint32_t rist_peer_get_cname(const struct rist_peer *peer, const char **cname)
 {
-	if (peer)
+	if (peer && cname)
 	{
 		*cname = &peer->cname[0];
-		return (uint32_t)strnlen(*cname, RIST_MAX_STRING_SHORT);
+		return (uint32_t)strnlen(*cname, sizeof(peer->cname));
 	}
 	else
 		return 0;
@@ -1450,7 +1452,7 @@ int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct
 }
 
 int rist_peer_get_socket(struct rist_peer *peer, int *socket, int *socket_extra) {
-	if (socket == NULL)
+	if (peer == NULL || socket == NULL)
 		return -1;
 	if (peer->parent != NULL)
 		return -1;
