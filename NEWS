@@ -45,6 +45,12 @@ Fable 5 security audit:
     address buffer.
 
 Bug Fixes:
+  - Public peer getters no longer crash on NULL arguments (issue #226).
+    rist_peer_get_cname() returns 0 when the output pointer is NULL (it
+    already guarded the peer), rist_peer_get_id() returns 0 on a NULL peer,
+    and rist_peer_get_socket() checks the peer before dereferencing it.
+    rist_peer_get_cname() also bounds the returned length with the actual
+    cname field size rather than a separate, coincidentally-equal constant.
   - EAP-SRP: a bonded caller-sender leg that goes silent and then resumes on
     the same source tuple (an interface flap or upstream outage that comes
     back without a reconnect) no longer stays wedged (issue #224).  While the
