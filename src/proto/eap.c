@@ -9,6 +9,7 @@
 #include "common/attributes.h"
 #include "config.h"
 #include "crypto/psk.h"
+#include "crypto/eap_v4_crypto.h"
 #include "endian-shim.h"
 #include "crypto/crypto-private.h"
 #include "crypto/srp.h"
@@ -28,6 +29,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <limits.h>
+#include <inttypes.h>
 
 #define HASH_ALGO SRP_SHA256
 #define DIGEST_LENGTH SHA256_DIGEST_LENGTH
@@ -43,6 +45,22 @@
 
 /* Permanent-failure sentinel for ctx->tries; fixed point under eap_tries_inc(). */
 #define EAP_AUTH_TRIES_PERMANENT UINT_MAX
+
+/* v4 (AES-256-GCM passphrase channel) needs a real crypto backend; else stay v3. */
+#if HAVE_MBEDTLS || HAVE_NETTLE
+#define EAP_V4_GCM_AVAILABLE 1
+#else
+#define EAP_V4_GCM_AVAILABLE 0
+#endif
+/* Highest EAP version we originate; -DEAP_VERSION_MAX=3 forces a v3 peer for interop. */
+#ifndef EAP_VERSION_MAX
+#define EAP_VERSION_MAX (EAP_V4_GCM_AVAILABLE ? 4 : 3)
+#endif
+#define EAP_V4_NONCE_LEN 12
+#define EAP_V4_TAG_LEN 16
+#define EAP_V4_AAD_LEN (5 + EAP_V4_NONCE_LEN)
+/* Max v4 plaintext in one EAPOL frame; the send bound and receive buffer share it. */
+#define EAP_V4_MAX_PLAINTEXT (1500 - (EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr) + 1 + EAP_V4_NONCE_LEN + EAP_V4_TAG_LEN))
 
 static int eap_request_passphrase(struct eapsrp_ctx *ctx, bool start);
 
@@ -123,6 +141,13 @@ struct eapsrp_ctx
 
 	bool srp_legacy_pad;         //srp-compat=1 URL opt-in
 	bool srp_legacy_peer_warned; //one-shot latch for the M1/M2 hint
+
+	/* EAP v4 (AEAD passphrase channel) state. */
+	uint8_t peer_eap_version;                 //highest EAP version the peer has advertised
+	uint64_t tx_nonce_counter;                //next 96-bit GCM nonce to assign for our send direction
+	uint64_t unsollicited_passphrase_nonce;   //cached nonce for the unsolicited push (stable across retransmits)
+	uint64_t rx_last_nonce;                   //highest v4 nonce accepted from the peer (this direction)
+	bool rx_nonce_seen;                       //whether rx_last_nonce is valid yet
 };
 
 static inline void eap_tries_inc(struct eapsrp_ctx *ctx)
@@ -130,6 +155,65 @@ static inline void eap_tries_inc(struct eapsrp_ctx *ctx)
 	/* Saturating: stays parked at EAP_AUTH_TRIES_PERMANENT instead of wrapping. */
 	if (ctx->tries < EAP_AUTH_TRIES_PERMANENT)
 		ctx->tries++;
+}
+
+/* v2 for a legacy session, else the highest we support. A v3 peer reads a
+ * v4-tagged packet as v3 (checks only >= 3), so advertising 4 is safe. */
+static inline uint8_t eap_tx_version(struct eapsrp_ctx *ctx)
+{
+	if (!ctx->eapversion3)
+		return 2;
+	return (uint8_t)EAP_VERSION_MAX;
+}
+
+/* Both ends can run v4: we originate it, the session is v3-hashed, and the peer
+ * advertised >= 4. Version is negotiated in the clear (outside the SRP proof),
+ * so a MITM can force a v3 downgrade -- integrity, not confidentiality. */
+static inline bool eap_use_v4(struct eapsrp_ctx *ctx)
+{
+	return EAP_VERSION_MAX >= 4 && ctx->eapversion3 && ctx->peer_eap_version >= 4;
+}
+
+/* Per-direction v4 key from K via HKDF-Expand-SHA256; the label separates the
+ * two directions so they never share a (key, nonce) pair. */
+static int eap_v4_dir_key(struct eapsrp_ctx *ctx, bool client_to_server, uint8_t out[32])
+{
+	const uint8_t *K = (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
+		? librist_crypto_srp_authenticator_get_key(ctx->auth_ctx)
+		: librist_crypto_srp_client_get_key(ctx->client_ctx);
+	if (K == NULL)
+		return -1;
+	const char *label = client_to_server ? "RIST-EAP-v4 pass c2s" : "RIST-EAP-v4 pass s2c";
+	return _librist_crypto_hkdf_expand_sha256(K, SHA256_DIGEST_LENGTH,
+		(const uint8_t *)label, strlen(label), out, 32);
+}
+
+/* AAD binds the wire-carried fields (identifier, flags, nonce). code/type/subtype
+ * are fixed constants pinned by both ends, so they frame the tag, not detect edits. */
+static void eap_v4_build_aad(uint8_t aad[EAP_V4_AAD_LEN], uint8_t identifier,
+                             uint8_t flags, const uint8_t nonce[EAP_V4_NONCE_LEN])
+{
+	aad[0] = EAP_CODE_RESPONSE;
+	aad[1] = identifier;
+	aad[2] = EAP_TYPE_SRP_SHA1;
+	aad[3] = EAP_SRP_SUBTYPE_PASSWORD_REQUEST_RESPONSE;
+	aad[4] = flags;
+	memcpy(&aad[5], nonce, EAP_V4_NONCE_LEN);
+}
+
+static void eap_v4_encode_nonce(uint64_t counter, uint8_t nonce[EAP_V4_NONCE_LEN])
+{
+	memset(nonce, 0, EAP_V4_NONCE_LEN); //top 4 octets stay zero
+	for (int i = 0; i < 8; i++)
+		nonce[EAP_V4_NONCE_LEN - 1 - i] = (uint8_t)(counter >> (8 * i));
+}
+
+static uint64_t eap_v4_decode_nonce(const uint8_t nonce[EAP_V4_NONCE_LEN])
+{
+	uint64_t v = 0;
+	for (int i = 0; i < 8; i++)
+		v = (v << 8) | nonce[EAP_V4_NONCE_LEN - 8 + i];
+	return v;
 }
 
 void eap_reset_data(struct eapsrp_ctx *ctx)
@@ -156,6 +240,13 @@ void eap_reset_data(struct eapsrp_ctx *ctx)
 	ctx->last_pkt = NULL;
 
 	ctx->authenticated = false;
+
+	/* Re-auth derives a fresh K, so restart the v4 nonce space; the new epoch
+	 * re-baselines rx_last_nonce (else a re-authing ctx rejects the peer's
+	 * restarted nonces despite a valid tag). */
+	ctx->tx_nonce_counter = 0;
+	ctx->rx_last_nonce = 0;
+	ctx->rx_nonce_seen = false;
 }
 
 static int send_eapol_pkt(struct eapsrp_ctx *ctx, uint8_t eapoltype, uint8_t eapcode, uint8_t identifier, size_t payload_len, uint8_t buf[], uint8_t eap_version)
@@ -228,7 +319,7 @@ static int process_eap_request_identity(struct eapsrp_ctx *ctx, uint8_t identifi
 	offset += strlen(ctx->config.username);
 	size_t len = offset;
 	len -= EAPOL_EAP_HDRS_OFFSET;
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, len, eapolpkt, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, len, eapolpkt, eap_tx_version(ctx));
 }
 
 static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t identifier, size_t len, uint8_t pkt[], uint8_t eap_version)
@@ -296,7 +387,7 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	int len_A = librist_crypto_srp_client_write_A_bytes(ctx->client_ctx, &response[EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)], sizeof(response) -(EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)));
 	if (len_A < 0)
 		return -1;
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, ((size_t)len_A + sizeof(*hdr)), response, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, ((size_t)len_A + sizeof(*hdr)), response, eap_tx_version(ctx));
 }
 
 static int process_eap_request_srp_server_key(struct eapsrp_ctx *ctx, uint8_t identifier, size_t len, uint8_t pkt[])
@@ -323,7 +414,7 @@ static int process_eap_request_srp_server_key(struct eapsrp_ctx *ctx, uint8_t id
 		ctx->did_first_auth = true;
 	}
 	librist_crypto_srp_client_write_M1_bytes(ctx->client_ctx, &response[offset]);
-	int ret = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, out_len, response, ctx->eapversion3? 3 :2);
+	int ret = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, out_len, response, eap_tx_version(ctx));
 	return ret;
 }
 
@@ -351,13 +442,13 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 		uint8_t outpkt[(EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr))] = {0};
 		struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&outpkt[EAPOL_EAP_HDRS_OFFSET];
 		if (ctx->eapversion3) {
-			int ret = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_SUCCESS, identifier, sizeof(*hdr), outpkt, 3);
+			int ret = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_SUCCESS, identifier, sizeof(*hdr), outpkt, eap_tx_version(ctx));
 			eap_request_passphrase(ctx, true);
 			return ret;
 		}
 		hdr->type = EAP_TYPE_SRP_SHA1;
 		hdr->subtype = EAP_SRP_SUBTYPE_SERVER_VALIDATOR;
-		return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, sizeof(*hdr), outpkt, ctx->eapversion3? 3 :2);
+		return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, sizeof(*hdr), outpkt, eap_tx_version(ctx));
 	}
 	//perm failure
 	rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
@@ -379,43 +470,79 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 	return -1;
 }
 
-static int eap_srp_send_password(struct eapsrp_ctx *ctx, uint8_t identifier, const uint8_t *password, size_t password_len) {
-	if (password_len > (1500 - (EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr) + 1)))
+/* Send an EAP SRP Passphrase Response: AES-256-GCM for v4 (per-direction key,
+ * caller-supplied nonce, header as AAD), else the v3 AES-CTR form. The nonce is
+ * used only on v4; reuse it verbatim when retransmitting identical plaintext. */
+static int eap_srp_send_password(struct eapsrp_ctx *ctx, uint8_t identifier, const uint8_t *password, size_t password_len, uint64_t nonce) {
+	bool v4 = (password_len > 0) && eap_use_v4(ctx);
+	size_t overhead = EAPOL_EAP_HDRS_OFFSET + sizeof(struct eap_srp_hdr) + 1 +
+		(v4 ? (EAP_V4_NONCE_LEN + EAP_V4_TAG_LEN) : 0);
+	if (password_len > (1500 - overhead))
 		return -1;
 	uint8_t outpkt[1500] = {0};
 	struct eap_srp_hdr *hdr = (struct eap_srp_hdr *)&outpkt[EAPOL_EAP_HDRS_OFFSET];
 	hdr->type = EAP_TYPE_SRP_SHA1;
 	hdr->subtype = EAP_SRP_SUBTYPE_PASSWORD_REQUEST_RESPONSE;
-	if (password_len == 0) { //Use session key
-		SET_BIT(outpkt[EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)], 7);
-	} else {
-		SET_BIT(outpkt[EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)], 6);
-		const uint8_t *key;
-		if (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
-			key = librist_crypto_srp_authenticator_get_key(ctx->auth_ctx);
-		else
-			key = librist_crypto_srp_client_get_key(ctx->client_ctx);
-
+	uint8_t *flags = &outpkt[EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr)];
+	size_t payload_len;
+	uint8_t send_version = eap_tx_version(ctx);
+	if (password_len == 0) { //Use session key (U bit); no ciphertext either version
+		SET_BIT(*flags, 7);
+		payload_len = sizeof(*hdr) + 1;
+	} else if (v4) {
+		SET_BIT(*flags, 6); //H = 256-bit (reserved-1 in v4)
+		uint8_t *noncep = flags + 1;
+		uint8_t *ct = noncep + EAP_V4_NONCE_LEN;
+		uint8_t *tag = ct + password_len;
+		eap_v4_encode_nonce(nonce, noncep);
+		uint8_t key[32];
+		bool c2s = (ctx->config.role == EAP_ROLE_AUTHENTICATEE); //we send client->server
+		if (eap_v4_dir_key(ctx, c2s, key) != 0)
+			return -1;
+		uint8_t aad[EAP_V4_AAD_LEN];
+		eap_v4_build_aad(aad, identifier, *flags, noncep);
+		int rc = _librist_crypto_aes_gcm_encrypt(key, noncep, EAP_V4_NONCE_LEN,
+			aad, sizeof(aad), password, password_len, ct, tag, EAP_V4_TAG_LEN);
+		_librist_crypto_secure_zero(key, sizeof(key));
+		if (rc != 0) {
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR,
+				EAP_LOG_PREFIX"v4 passphrase GCM encrypt failed\n");
+			return -1;
+		}
+		payload_len = sizeof(*hdr) + 1 + EAP_V4_NONCE_LEN + password_len + EAP_V4_TAG_LEN;
+		send_version = 4; //payload format must match the version byte
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
+			EAP_LOG_PREFIX"v4 passphrase sent under AES-256-GCM (nonce=%" PRIu64 ", %zu bytes)\n",
+			nonce, password_len);
+	} else { //v3 AES-CTR
+		SET_BIT(*flags, 6); //aes_256
+		const uint8_t *key = (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
+			? librist_crypto_srp_authenticator_get_key(ctx->auth_ctx)
+			: librist_crypto_srp_client_get_key(ctx->client_ctx);
 		uint8_t iv[AES_BLOCK_SIZE] = {0};
 		iv[AES_BLOCK_SIZE-1] = identifier;
-		_librist_crypto_aes_ctr(key, 256, iv, password, &outpkt[EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr) +1], password_len);
+		_librist_crypto_aes_ctr(key, 256, iv, password, flags + 1, password_len);
+		payload_len = sizeof(*hdr) + 1 + password_len;
+		send_version = ctx->eapversion3 ? 3 : 2; //never tag a v3 payload as v4
 	}
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, sizeof(*hdr) +1 + password_len, outpkt, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_RESPONSE, identifier, payload_len, outpkt, send_version);
 }
 
 static int process_eap_request_srp_passphrase(struct eapsrp_ctx *ctx, uint8_t identifier) {
 	if (ctx->authentication_state == EAP_AUTH_STATE_SUCCESS) {
 		if (ctx->config.use_key_as_passphrase)
-			return eap_srp_send_password(ctx, identifier, NULL, 0);
+			return eap_srp_send_password(ctx, identifier, NULL, 0, 0);
 
 		const uint8_t *passphrase = NULL;
 		size_t passphrase_len = 0;
 		librist_peer_get_current_tx_passphrase(ctx->peer, &passphrase, &passphrase_len);
-		return eap_srp_send_password(ctx, identifier, passphrase,  passphrase_len);
+		/* Solicited response: fresh nonce per send. Same-plaintext-different-nonce
+		 * is safe under GCM; this path is not self-retransmitted (the peer re-requests). */
+		return eap_srp_send_password(ctx, identifier, passphrase, passphrase_len, ctx->tx_nonce_counter++);
 	}
 
 	uint8_t buf[EAPOL_EAP_HDRS_OFFSET];
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_FAILURE, identifier, 0, buf, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_FAILURE, identifier, 0, buf, eap_tx_version(ctx));
 }
 
 static int process_eap_request(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, uint8_t identifier, uint8_t eap_version)
@@ -540,7 +667,7 @@ static int process_eap_response_identity(struct eapsrp_ctx *ctx, size_t len, uin
 		}
 		ctx->last_identifier++;
 		size_t out_len = offset - EAPOL_EAP_HDRS_OFFSET;
-		rc = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, out_len, outpkt, ctx->eapversion3? 3 :2);
+		rc = send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, out_len, outpkt, eap_tx_version(ctx));
 	}
 out:
 	free(verifier_data.verifier);
@@ -571,7 +698,7 @@ static int process_eap_response_client_key(struct eapsrp_ctx *ctx, size_t len, u
 	if (len_B < 0)
 		return -1;
 	ctx->last_identifier++;
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, (sizeof(struct eap_srp_hdr) + (size_t)len_B), outpkt, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, (sizeof(struct eap_srp_hdr) + (size_t)len_B), outpkt, eap_tx_version(ctx));
 }
 
 static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t len, uint8_t pkt[])
@@ -607,7 +734,7 @@ static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t 
 			ret = EAP_AUTH_TERMINATED;
 		}
 		uint8_t buf[EAPOL_EAP_HDRS_OFFSET];
-		send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_FAILURE, ctx->last_identifier, 0, buf, ctx->eapversion3? 3 :2);
+		send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_FAILURE, ctx->last_identifier, 0, buf, eap_tx_version(ctx));
 		eap_reset_data(ctx);
 		return ret;
 	}
@@ -629,7 +756,7 @@ static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t 
 	}
 	librist_crypto_srp_authenticator_write_M2_bytes(ctx->auth_ctx, &outpkt[(EAPOL_EAP_HDRS_OFFSET + sizeof(*hdr) + 4)]);
 	ctx->last_identifier++;
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, (sizeof(*hdr) + 4 + DIGEST_LENGTH), outpkt, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, (sizeof(*hdr) + 4 + DIGEST_LENGTH), outpkt, eap_tx_version(ctx));
 }
 
 static int process_eap_response_srp_server_validator(struct eapsrp_ctx *ctx)
@@ -651,7 +778,7 @@ static int process_eap_response_srp_server_validator(struct eapsrp_ctx *ctx)
 	return 0;
 }
 
-static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t identifier, size_t len, uint8_t pkt[]) {
+static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t identifier, size_t len, uint8_t pkt[], uint8_t eap_version) {
 	if (ctx->authentication_state != EAP_AUTH_STATE_SUCCESS)
 		return 0;
 
@@ -661,8 +788,9 @@ static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t ident
 	 *
 	 * When no request is active the RESPONSE is an unsolicited
 	 * passphrase push (the protocol explicitly allows this — see
-	 * rist_eap_send_passphrase).  Its payload is AES-CTR encrypted
-	 * under the SRP session key, which provides integrity. */
+	 * rist_eap_send_passphrase).  Its payload is encrypted under the SRP
+	 * session key: v3 AES-CTR (confidentiality only) or, when both peers
+	 * are v4, AES-256-GCM (integrity + authenticity + replay protection). */
 	bool matches_request = (ctx->passphrase_request_timer != 0 &&
 	                        identifier == ctx->passphrase_request_identifier);
 	if (ctx->passphrase_request_timer != 0 && !matches_request)
@@ -671,24 +799,61 @@ static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t ident
 	if (len < 1)
 		return EAP_LENERR;
 	bool use_derived_key = CHECK_BIT(pkt[0], 7);
-	const uint8_t *key = NULL;
-	if (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
-		key = librist_crypto_srp_authenticator_get_key(ctx->auth_ctx);
-	else
-		key = librist_crypto_srp_client_get_key(ctx->client_ctx);
+	const uint8_t *skey = (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
+		? librist_crypto_srp_authenticator_get_key(ctx->auth_ctx)
+		: librist_crypto_srp_client_get_key(ctx->client_ctx);
 	if (use_derived_key) {
-		librist_peer_update_rx_passphrase(ctx->peer, key, SHA256_DIGEST_LENGTH, matches_request);
+		librist_peer_update_rx_passphrase(ctx->peer, skey, SHA256_DIGEST_LENGTH, matches_request);
+	} else if (EAP_V4_GCM_AVAILABLE && eap_version >= 4) {
+		/* v4 layout after the SRP header: [flags][nonce 12][ciphertext..][tag 16] */
+		if (len < (size_t)(1 + EAP_V4_NONCE_LEN + EAP_V4_TAG_LEN))
+			return EAP_LENERR;
+		size_t ct_len = len - 1 - EAP_V4_NONCE_LEN - EAP_V4_TAG_LEN;
+		const uint8_t *noncep = &pkt[1];
+		const uint8_t *ct = noncep + EAP_V4_NONCE_LEN;
+		const uint8_t *tag = ct + ct_len;
+		uint8_t plain[EAP_V4_MAX_PLAINTEXT];
+		if (ct_len == 0 || ct_len > sizeof(plain))
+			return EAP_LENERR;
+		uint8_t key[32];
+		bool c2s = (ctx->config.role == EAP_ROLE_AUTHENTICATOR); //we receive client->server
+		if (eap_v4_dir_key(ctx, c2s, key) != 0)
+			return EAP_INTERNALERR;
+		uint8_t aad[EAP_V4_AAD_LEN];
+		eap_v4_build_aad(aad, identifier, pkt[0], noncep);
+		if (_librist_crypto_aes_gcm_decrypt(key, noncep, EAP_V4_NONCE_LEN,
+			aad, sizeof(aad), ct, ct_len, tag, EAP_V4_TAG_LEN, plain) != 0) {
+			/* Tag failed: drop without ACK so the sender retransmits; never
+			 * install unverified material (plain already zeroed by decrypt). */
+			_librist_crypto_secure_zero(key, sizeof(key));
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
+				EAP_LOG_PREFIX"v4 passphrase authentication tag failed; dropping\n");
+			return 0;
+		}
+		uint64_t rx_nonce = eap_v4_decode_nonce(noncep);
+		/* Strictly-increasing nonces only; a byte-identical retransmit is
+		 * re-ACKed without reinstalling. */
+		if (!ctx->rx_nonce_seen || rx_nonce > ctx->rx_last_nonce) {
+			ctx->rx_last_nonce = rx_nonce;
+			ctx->rx_nonce_seen = true;
+			librist_peer_update_rx_passphrase(ctx->peer, plain, ct_len, matches_request);
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
+				EAP_LOG_PREFIX"v4 passphrase verified and installed (AES-256-GCM, nonce=%" PRIu64 ")\n",
+				rx_nonce);
+		}
+		_librist_crypto_secure_zero(key, sizeof(key));
+		_librist_crypto_secure_zero(plain, sizeof(plain));
 	} else {
 		bool aes_256 = CHECK_BIT(pkt[0], 6);
 		uint8_t iv[16] = {0};
 		iv[15] = identifier;
-		_librist_crypto_aes_ctr(key, aes_256? 256: 128, iv, &pkt[1], &pkt[1], len -1);
+		_librist_crypto_aes_ctr(skey, aes_256? 256: 128, iv, &pkt[1], &pkt[1], len -1);
 		librist_peer_update_rx_passphrase(ctx->peer, &pkt[1], len-1, matches_request);
 	}
 	uint8_t buf[EAPOL_EAP_HDRS_OFFSET];
 	if (ctx->passphrase_request_timer)
 		ctx->passphrase_request_timer = 0;
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_SUCCESS, identifier, 0, buf, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_SUCCESS, identifier, 0, buf, eap_tx_version(ctx));
 }
 
 static int eap_request_passphrase(struct eapsrp_ctx *ctx, bool start) {
@@ -705,7 +870,7 @@ static int eap_request_passphrase(struct eapsrp_ctx *ctx, bool start) {
 	hdr->subtype = EAP_SRP_SUBTYPE_PASSWORD_REQUEST_RESPONSE;
 	ctx->passphrase_request_times++;
 	ctx->passphrase_request_timer = timestampNTP_u64();
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->passphrase_request_identifier, sizeof(*hdr), outpkt, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->passphrase_request_identifier, sizeof(*hdr), outpkt, eap_tx_version(ctx));
 }
 
 static int process_eap_response(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, uint8_t identifier, uint8_t eap_version)
@@ -756,7 +921,7 @@ static int process_eap_response(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t le
 				//handle SRP lw rechallenge
 				break;
 			case EAP_SRP_SUBTYPE_PASSWORD_REQUEST_RESPONSE:
-				return process_eap_response_passphrase(ctx, identifier, (len -2), &pkt[2]);
+				return process_eap_response_passphrase(ctx, identifier, (len -2), &pkt[2], eap_version);
 				break;
 			default:
 				return EAP_SRP_WRONGSUBTYPE;
@@ -786,6 +951,9 @@ static int process_eap_pkt(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t len, ui
 		return EAP_AUTH_TERMINATED;
 	if (len < sizeof(struct eap_hdr))
 		return EAP_LENERR;
+	/* Record the peer's advertised EAP version for v4 negotiation. */
+	if (eap_version > ctx->peer_eap_version)
+		ctx->peer_eap_version = eap_version;
 	struct eap_hdr *hdr = (struct eap_hdr *)pkt;
 	uint8_t code = hdr->code;
 	uint8_t identifier = hdr->identifier;
@@ -836,7 +1004,7 @@ int eap_request_identity(struct eapsrp_ctx *ctx)
 	if (_librist_crypto_random_u32(&id_rand) != 0)
 		return -1;
 	ctx->last_identifier = (uint8_t)(id_rand >> 24);
-	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, 1, outpkt, ctx->eapversion3? 3 :2);
+	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_REQUEST, ctx->last_identifier, 1, outpkt, eap_tx_version(ctx));
 }
 
 /* EAPOL is exempt from encryption, so START still reaches a peer that has
@@ -1080,7 +1248,8 @@ static void eap_periodic_impl(struct eapsrp_ctx *ctx)
 			ctx->unsollicited_passphrase_response_timer = 0;
 			ctx->unsollicited_passphrase_state = EAP_PASSPHRASE_STATE_FAILED;
 		} else {
-			eap_srp_send_password(ctx, ctx->unsollicited_passphrase_response_identifier, ctx->unsollicited_passphrase, ctx->unsollicited_passphrase_len);
+			/* Retransmit reuses the cached nonce so a v4 payload is byte-identical. */
+			eap_srp_send_password(ctx, ctx->unsollicited_passphrase_response_identifier, ctx->unsollicited_passphrase, ctx->unsollicited_passphrase_len, ctx->unsollicited_passphrase_nonce);
 			ctx->unsollicited_passphrase_response_timer = timestampNTP_u64();
 			ctx->unsollicited_passphrase_response_times++;
 		}
@@ -1369,6 +1538,8 @@ void rist_eap_send_passphrase(struct eapsrp_ctx *ctx, const char *passphrase) {
 	if (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
 		SET_BIT(ctx->unsollicited_passphrase_response_identifier, 7);
 	UNSET_BIT(ctx->unsollicited_passphrase_response_identifier, 6);
-    eap_srp_send_password(ctx, ctx->unsollicited_passphrase_response_identifier, ctx->unsollicited_passphrase, ctx->unsollicited_passphrase_len);
+	/* Assign a fresh nonce for this new passphrase; retransmits reuse it. */
+	ctx->unsollicited_passphrase_nonce = ctx->tx_nonce_counter++;
+    eap_srp_send_password(ctx, ctx->unsollicited_passphrase_response_identifier, ctx->unsollicited_passphrase, ctx->unsollicited_passphrase_len, ctx->unsollicited_passphrase_nonce);
     pthread_mutex_unlock(&ctx->eap_lock);
 }

@@ -10,6 +10,14 @@ Changes for 0.2.19-rc2:
 ---------------------------------
 
 Features:
+  - EAP SHA256-SRP6a gains Version 4: the passphrase pushed over an
+    authenticated SRP session is now carried under AES-256-GCM (authenticated
+    encryption) instead of the v3 AES-CTR (confidentiality-only) form. Keys are
+    per-direction (HKDF-Expand-SHA256 off the SRP session key), the 96-bit
+    nonce is monotonic and in-packet, the EAP/SRP header is bound as AAD, and
+    the receiver verifies the tag and accepts only strictly-increasing nonces
+    before installing. v4 engages only when both peers advertise EAP version 4
+    (a GCM backend is present); a v3/v2 peer falls back to AES-CTR unchanged.
   - TUN tools (risttunnel -l) and rist_tun_set_ip() now accept IPv6 local
     addresses with prefix lengths up to /128 (e.g. fd00::1/64). Linux uses
     rtnetlink RTM_NEWADDR; macOS uses in6_aliasreq. IPv4 behaviour is
