@@ -710,7 +710,7 @@ int librist_crypto_srp_authenticator_verify_m1(struct librist_crypto_srp_authent
 	ret = librist_crypto_srp_calculate_m2(&ctx->A, m1_buf, ctx->key, ctx->m2, ctx->correct_hashing_init);
 
 #if DEBUG_EXTRACT_SRP_EXCHANGE
-	print_hash(ctx->key, "M2: ");
+	print_hash(ctx->m2, "M2: ");
 #endif
 out:
 	BIGNUM_FREE(&u);
