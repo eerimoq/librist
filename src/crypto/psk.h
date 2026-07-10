@@ -63,21 +63,4 @@ RIST_PRIV int _librist_crypto_psk_set_passphrase(struct rist_key *key, const uin
 RIST_PRIV void _librist_crypto_psk_get_passphrase(struct rist_key *key, const uint8_t **passphrase, size_t *passphrase_len);
 RIST_PRIV void _librist_crypto_aes_ctr(const uint8_t key[], int key_size, uint8_t iv[], const uint8_t inbuf[], uint8_t outbuf[], size_t payload_len);
 RIST_PRIV void _librist_crypto_psk_preannounce_nonce(struct rist_key *key, const uint8_t nonce[4], uint32_t key_size_bits);
-
-/* EAP SHA256-SRP6a Version 4 authenticated passphrase channel primitives.
- * Return 0 on success; a negative value on error or when the active crypto
- * backend lacks AEAD/HMAC (built-in fallback), which the caller treats as
- * "v4 unavailable, negotiate down to v3 AES-CTR". */
-RIST_PRIV int _librist_crypto_hkdf_expand_sha256(const uint8_t *prk, size_t prk_len,
-                                                 const uint8_t *info, size_t info_len,
-                                                 uint8_t *okm, size_t okm_len);
-RIST_PRIV int _librist_crypto_aes_gcm_encrypt(const uint8_t *key, const uint8_t *iv, size_t iv_len,
-                                              const uint8_t *aad, size_t aad_len,
-                                              const uint8_t *pt, size_t pt_len,
-                                              uint8_t *ct, uint8_t *tag, size_t tag_len);
-RIST_PRIV int _librist_crypto_aes_gcm_decrypt(const uint8_t *key, const uint8_t *iv, size_t iv_len,
-                                              const uint8_t *aad, size_t aad_len,
-                                              const uint8_t *ct, size_t ct_len,
-                                              const uint8_t *tag, size_t tag_len,
-                                              uint8_t *pt);
 #endif

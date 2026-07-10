@@ -43,6 +43,23 @@ test_adv_roundtrip = executable('test_adv_roundtrip',
                                 dependencies : adv_test_deps)
 test('adv_roundtrip', test_adv_roundtrip, suite:['unit'])
 
+# EAP v4 crypto primitives (HKDF-Expand-SHA256 + AES-256-GCM) known-answer tests.
+# Compiles eap_v4_crypto.c directly to reach RIST_PRIV (hidden-visibility)
+# symbols. Gated on have_srp, which implies a real crypto backend (mbedTLS or
+# Nettle) is present; the built-in fallback has no AEAD.
+if have_srp
+	eap_v4_crypto_deps = [crypto_deps]
+	if host_machine.system() == 'windows'
+		eap_v4_crypto_deps += cc.find_library('bcrypt')  # mbedcrypto entropy_poll calls BCryptGenRandom
+	endif
+	test_eap_v4_crypto = executable('test_eap_v4_crypto',
+	                                'test_eap_v4_crypto.c',
+	                                '../../../src/crypto/eap_v4_crypto.c',
+	                                include_directories : inc,
+	                                dependencies : eap_v4_crypto_deps)
+	test('eap_v4_crypto', test_eap_v4_crypto, suite:['unit'])
+endif
+
 # URL ?profile= parsing exercised through the public rist_parse_address2 API.
 test_url_profile_parse = executable('test_url_profile_parse',
                                     'test_url_profile_parse.c',
