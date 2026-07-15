@@ -42,6 +42,11 @@ struct rist_stats_sender_peer
 	 * context uses Main framing until the peer advertises Advanced support
 	 * (TR-06-3 Section 9), so profile alone does not imply Advanced framing. */
 	uint8_t advanced_active;
+	/* Non-zero while this bonded leg is currently muted by RTT auto-mute
+	 * (?rtt-drop=): its unique payload is diverted to the healthier legs. */
+	uint8_t rtt_muted;
+	/* Cumulative number of RTT-triggered mute events on this leg. */
+	uint32_t rtt_mute_events;
 };
 
 struct rist_stats_receiver_peer

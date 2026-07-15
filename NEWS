@@ -41,8 +41,10 @@ Features:
     probing RTT while muted; a low-rate redundant trickle (?rtt-drop-trickle=<N>,
     1-in-N duplicate packets, on by default) keeps the muted leg measured so
     recovery is warm rather than a cold cut-over (set 0 for a hard mute). The
-    last healthy leg is never muted. Disabled by default (rtt-drop=0); no wire
-    change.
+    last healthy leg is never muted. Per-leg mute state (rtt_muted) and a
+    cumulative mute-event counter (rtt_mute_events) are exposed in the sender
+    stats JSON and the Prometheus exporter. Disabled by default (rtt-drop=0);
+    no wire change.
   - EAP SHA256-SRP6a gains Version 4: the passphrase pushed over an
     authenticated SRP session is now carried under AES-256-GCM (authenticated
     encryption) instead of the v3 AES-CTR (confidentiality-only) form. Keys are
