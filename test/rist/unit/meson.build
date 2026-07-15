@@ -157,6 +157,19 @@ test_adv_ts_reconstruct = executable('test_adv_ts_reconstruct',
                                      include_directories : inc)
 test('adv_ts_reconstruct', test_adv_ts_reconstruct, suite:['unit'])
 
+# RTT-based bonded-leg muting hysteresis state machine (header-only, no link).
+test_rtt_mute = executable('test_rtt_mute',
+                           'test_rtt_mute.c',
+                           include_directories : inc)
+test('rtt_mute', test_rtt_mute, suite:['unit'])
+
+# ?rtt-drop= et al URL parsing exercised through the public API.
+test_url_rtt_drop_parse = executable('test_url_rtt_drop_parse',
+                                     'test_url_rtt_drop_parse.c',
+                                     include_directories : inc,
+                                     link_with : librist)
+test('url_rtt_drop_parse', test_url_rtt_drop_parse, suite:['unit'])
+
 # TUN CIDR parsing (IPv4 + IPv6) used by risttunnel -l.
 test_tun_cidr_parse = executable('test_tun_cidr_parse',
                                  'test_tun_cidr_parse.c',

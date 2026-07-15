@@ -1186,6 +1186,13 @@ int rist_peer_config_defaults_set_versioned(struct rist_peer_config *peer_config
 			peer_config->recovery_priority = RIST_DEFAULT_RECOVERY_PRIORITY;
 			peer_config->recovery_depth = RIST_RECOVERY_DEPTH_DEFAULT;
 		}
+		if (version >= 6)
+		{
+			peer_config->rtt_drop = RIST_DEFAULT_RTT_DROP;
+			peer_config->rtt_restore = RIST_DEFAULT_RTT_RESTORE;
+			peer_config->rtt_drop_settle = RIST_DEFAULT_RTT_DROP_SETTLE;
+			peer_config->rtt_drop_trickle = RIST_DEFAULT_RTT_DROP_TRICKLE;
+		}
 		return 0;
 	}
 	else

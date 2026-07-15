@@ -42,6 +42,11 @@ struct rist_peer;
 #define RIST_DEFAULT_KEEPALIVE_INTERVAL (1000)
 #define RIST_DEFAULT_TIMING_MODE RIST_TIMING_MODE_SOURCE
 #define RIST_DEFAULT_RECOVERY_PRIORITY (0)
+/* Dynamic RTT-based bonded-leg muting (sender). Disabled by default. */
+#define RIST_DEFAULT_RTT_DROP (0)           /* smoothed-RTT ceiling ms; 0 = disabled */
+#define RIST_DEFAULT_RTT_RESTORE (0)        /* restore low-water ms; 0 = derive (80% of drop) */
+#define RIST_DEFAULT_RTT_DROP_SETTLE (2000) /* dwell ms before a drop/restore transition */
+#define RIST_DEFAULT_RTT_DROP_TRICKLE (100) /* 1-in-N duplicate rate while muted (~1%, warm restore); 0 = hard mute */
 
 /* Special value for rist_peer_config.weight: a peer configured with this
  * weight receives a duplicate of every packet instead of taking part in
@@ -83,7 +88,7 @@ enum librist_merge_mode
 	LIBRIST_MERGE_MODE_AUTO  = 2,
 };
 
-#define RIST_PEER_CONFIG_VERSION (5)
+#define RIST_PEER_CONFIG_VERSION (6)
 
 /* Advanced-profile recovery depth: the base-2 exponent of the retransmission
  * ring size. The ring holds (65536 << depth) packets, i.e. 2^depth times the
@@ -214,6 +219,14 @@ struct rist_peer_config
 	 * profile and only before rist_start(). Version 5+. */
 	uint8_t recovery_depth;
 
+	/* Dynamic RTT-based bonded-leg muting (sender, Version 6+). A leg whose
+	 * smoothed RTT holds above rtt_drop for rtt_drop_settle is pulled from the
+	 * weighted payload rotation, rejoining once it holds below rtt_restore.
+	 * The last healthy leg is never muted. All ms; rtt_drop == 0 disables. */
+	uint32_t rtt_drop;         /* smoothed-RTT ceiling; 0 = disabled */
+	uint32_t rtt_restore;      /* restore low-water; 0 = derive as 80% of rtt_drop */
+	uint32_t rtt_drop_settle;  /* dwell before a drop/restore transition */
+	uint32_t rtt_drop_trickle; /* 1-in-N redundant duplicate on a muted leg; 0 = hard mute */
 };
 
 /**

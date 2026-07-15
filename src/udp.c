@@ -984,6 +984,25 @@ peer_select:
 			peer->w_count = peer->config.weight;
 			continue;
 		}
+
+		/* RTT-muted leg: skipped in the unique-payload rotation. With
+		 * ?rtt-drop-trickle=N, still send a deduped duplicate every Nth packet
+		 * so RTT keeps sampling for a warm restore without stalling the buffer. */
+		if (peer->rtt_muted) {
+			if (peer->config.rtt_drop_trickle > 0 && !looped && !peer->dead) {
+				if (++peer->rtt_trickle_counter >= peer->config.rtt_drop_trickle) {
+					peer->rtt_trickle_counter = 0;
+					uint8_t *payload = buffer->data;
+					rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
+				}
+			}
+			ctx->weight_counter -= peer->config.weight;
+			if (ctx->weight_counter <= 0) {
+				ctx->weight_counter = ctx->total_weight;
+			}
+			peer->w_count = peer->config.weight;
+			continue;
+		}
 		peercnt++;
 
 		/*************************************/

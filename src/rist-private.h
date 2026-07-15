@@ -35,6 +35,7 @@
 #include "proto/gre.h"
 #include "proto/adv.h"
 #include "rist-adv-ts.h"
+#include "rist-rtt-mute.h"
 
 struct cJSON;
 
@@ -677,6 +678,14 @@ struct rist_peer {
 
 	/* RTT statistics */
 	uint64_t last_rtt;
+
+	/* Dynamic RTT-based muting (sender bonding, ?rtt-drop=). When muted the
+	 * leg is skipped in the weighted payload rotation but its connection and
+	 * RTCP probing continue so RTT keeps updating for the restore decision. */
+	bool rtt_muted;
+	struct rist_rtt_mute_state rtt_mute_state;
+	uint32_t rtt_trickle_counter; /* 1-in-N counter for redundant trickle sends */
+	uint32_t rtt_mute_count; /* cumulative count of RTT-triggered mute events */
 
 	/* Missing queue max size */
 	uint32_t missing_counter_max;

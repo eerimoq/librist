@@ -33,6 +33,16 @@ Features:
     rebuilt clock over the first second and corrects to arrival timing for
     the rest of the session if it is not advancing at real time (an older,
     non-conformant sender). Set timing-mode=arrival to force arrival.
+  - Bonded senders can auto-mute a failing leg by RTT. When a leg's smoothed
+    RTT stays above ?rtt-drop=<ms> for ?rtt-drop-settle=<ms>, it is pulled out
+    of the weighted payload rotation so the healthy leg(s) carry 100% of the
+    stream, and it rejoins once RTT stays below ?rtt-restore=<ms> for the same
+    dwell (hysteresis prevents flapping). The connection stays up and keeps
+    probing RTT while muted; a low-rate redundant trickle (?rtt-drop-trickle=<N>,
+    1-in-N duplicate packets, on by default) keeps the muted leg measured so
+    recovery is warm rather than a cold cut-over (set 0 for a hard mute). The
+    last healthy leg is never muted. Disabled by default (rtt-drop=0); no wire
+    change.
   - EAP SHA256-SRP6a gains Version 4: the passphrase pushed over an
     authenticated SRP session is now carried under AES-256-GCM (authenticated
     encryption) instead of the v3 AES-CTR (confidentiality-only) form. Keys are

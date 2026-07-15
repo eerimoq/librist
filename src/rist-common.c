@@ -268,6 +268,22 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				int temp = atoi( val );
 				if (temp >= 0)
 					output_peer_config->recovery_priority = (uint32_t)temp;
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_RTT_DROP ) == 0) {
+				int temp = atoi( val );
+				if (temp >= 0)
+					output_peer_config->rtt_drop = (uint32_t)temp;
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_RTT_RESTORE ) == 0) {
+				int temp = atoi( val );
+				if (temp >= 0)
+					output_peer_config->rtt_restore = (uint32_t)temp;
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_RTT_DROP_SETTLE ) == 0) {
+				int temp = atoi( val );
+				if (temp >= 0)
+					output_peer_config->rtt_drop_settle = (uint32_t)temp;
+			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_RTT_DROP_TRICKLE ) == 0) {
+				int temp = atoi( val );
+				if (temp >= 0)
+					output_peer_config->rtt_drop_trickle = (uint32_t)temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_SESSION_TIMEOUT ) == 0) {
 				int temp = atoi( val );
 				if (temp > 0)
@@ -2852,6 +2868,10 @@ static void peer_copy_settings(struct rist_peer *peer_src, struct rist_peer *pee
 	strncpy(peer->config.multicast_source, peer_src->config.multicast_source, RIST_MAX_STRING_LONG - 1);
 	peer->config.multicast_source[RIST_MAX_STRING_LONG - 1] = '\0';
 	peer->config.local_port = peer_src->config.local_port;
+	peer->config.rtt_drop = peer_src->config.rtt_drop;
+	peer->config.rtt_restore = peer_src->config.rtt_restore;
+	peer->config.rtt_drop_settle = peer_src->config.rtt_drop_settle;
+	peer->config.rtt_drop_trickle = peer_src->config.rtt_drop_trickle;
 	peer->rtcp_keepalive_interval = peer_src->rtcp_keepalive_interval;
 	peer->peer_ssrc = peer_src->peer_ssrc;
 	peer->session_timeout = peer_src->session_timeout;
@@ -4594,6 +4614,94 @@ void rist_timeout_check(struct rist_common_ctx *cctx, uint64_t now)
 	}
 }
 
+/* True for a bonded data leg that participates in weighted balancing and has
+ * auto-mute configured. Listeners, children, and duplicate (weight 0) legs are
+ * out of scope. Caller must hold peerlist_lock. */
+static inline bool rist_peer_rtt_mute_eligible(const struct rist_peer *peer)
+{
+	return peer->is_data && !peer->parent && !peer->listening
+		&& peer->config.rtt_drop > 0
+		&& peer->config.weight != RIST_PEER_WEIGHT_DUPLICATE;
+}
+
+/* Evaluate the RTT-based muting hysteresis for every eligible bonded leg and
+ * flip peer->rtt_muted accordingly. Runs once per second from the sender loop
+ * with peerlist_lock held. The last healthy leg is never muted, so auto-mute
+ * can never black out the stream. */
+static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
+{
+	struct rist_peer *peer;
+	int eligible = 0;
+
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (rist_peer_rtt_mute_eligible(peer))
+			eligible++;
+	}
+	/* Nothing to fail over to: never mute a single leg. */
+	if (eligible < 2)
+		return;
+
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!rist_peer_rtt_mute_eligible(peer))
+			continue;
+		if (peer->eight_times_rtt == 0)
+			continue; /* no RTT sample yet */
+
+		uint64_t smoothed = peer->eight_times_rtt / 8;
+		uint64_t drop = (uint64_t)peer->config.rtt_drop * RIST_CLOCK;
+		uint64_t restore = peer->config.rtt_restore
+			? (uint64_t)peer->config.rtt_restore * RIST_CLOCK
+			: (drop * 4) / 5;
+		if (restore >= drop)
+			restore = (drop * 4) / 5;
+		uint64_t settle = (uint64_t)peer->config.rtt_drop_settle * RIST_CLOCK;
+
+		enum rist_rtt_mute_action act = rist_rtt_mute_step(&peer->rtt_mute_state,
+				smoothed, drop, restore, settle, now);
+		if (act == RIST_RTT_MUTE_DROP) {
+			peer->rtt_muted = true;
+			peer->rtt_mute_count++;
+			rist_log_priv(&ctx->common, RIST_LOG_INFO,
+				"Peer %"PRIu32" muted: smoothed RTT %"PRIu64"ms over %ums ceiling\n",
+				peer->adv_peer_id, smoothed / RIST_CLOCK, peer->config.rtt_drop);
+		} else if (act == RIST_RTT_MUTE_RESTORE) {
+			peer->rtt_muted = false;
+			peer->rtt_trickle_counter = 0;
+			rist_log_priv(&ctx->common, RIST_LOG_INFO,
+				"Peer %"PRIu32" restored to bond: smoothed RTT %"PRIu64"ms\n",
+				peer->adv_peer_id, smoothed / RIST_CLOCK);
+		}
+	}
+
+	/* Last-healthy-leg guard: if the pass above left every eligible leg
+	 * muted, keep the lowest-RTT one in the bond rather than black out. */
+	int active = 0;
+	struct rist_peer *best = NULL;
+	uint64_t best_rtt = UINT64_MAX;
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!rist_peer_rtt_mute_eligible(peer))
+			continue;
+		if (!peer->rtt_muted) {
+			active++;
+			continue;
+		}
+		uint64_t smoothed = peer->eight_times_rtt ? peer->eight_times_rtt / 8 : UINT64_MAX;
+		if (smoothed < best_rtt) {
+			best_rtt = smoothed;
+			best = peer;
+		}
+	}
+	if (active == 0 && best) {
+		best->rtt_muted = false;
+		best->rtt_trickle_counter = 0;
+		best->rtt_mute_state.muted = false;
+		best->rtt_mute_state.pending = false;
+		rist_log_priv(&ctx->common, RIST_LOG_INFO,
+			"Peer %"PRIu32" kept in bond (all bonded legs over RTT ceiling)\n",
+			best->adv_peer_id);
+	}
+}
+
 PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 {
 	struct rist_sender *ctx = (struct rist_sender *) arg;
@@ -4630,6 +4738,7 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 			ctx->checks_next_time += (uint64_t)1000 * (uint64_t)RIST_CLOCK;
 			pthread_mutex_lock(&ctx->common.peerlist_lock);
 			rist_timeout_check(&ctx->common, now);
+			rist_sender_rtt_mute_check(ctx, now);
 			pthread_mutex_unlock(&ctx->common.peerlist_lock);
 		}
 
@@ -5052,6 +5161,17 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 		peer->config.srp_compat_legacy = settings->srp_compat_legacy; //read by rist_enable_eap_srp_2 after peer_create
 	else
 		peer->config.srp_compat_legacy = 0;
+	if (settings->version >= 6) {
+		peer->config.rtt_drop = settings->rtt_drop;
+		peer->config.rtt_restore = settings->rtt_restore;
+		peer->config.rtt_drop_settle = settings->rtt_drop_settle;
+		peer->config.rtt_drop_trickle = settings->rtt_drop_trickle;
+	} else {
+		peer->config.rtt_drop = 0;
+		peer->config.rtt_restore = 0;
+		peer->config.rtt_drop_settle = RIST_DEFAULT_RTT_DROP_SETTLE;
+		peer->config.rtt_drop_trickle = 0;
+	}
 
 	init_peer_settings(peer);
 }
