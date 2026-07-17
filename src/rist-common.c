@@ -4624,10 +4624,9 @@ static inline bool rist_peer_rtt_mute_eligible(const struct rist_peer *peer)
 		&& peer->config.weight != RIST_PEER_WEIGHT_DUPLICATE;
 }
 
-/* Evaluate the RTT-based muting hysteresis for every eligible bonded leg and
- * flip peer->rtt_muted accordingly. Runs once per second from the sender loop
- * with peerlist_lock held. The last healthy leg is never muted, so auto-mute
- * can never black out the stream. */
+/* Evaluate the RTT hysteresis for every eligible bonded leg and flip
+ * peer->rtt_muted. Runs on a short tick (see the sender loop) with
+ * peerlist_lock held. The last healthy leg is never muted. */
 static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
 {
 	struct rist_peer *peer;
@@ -4654,10 +4653,13 @@ static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
 			: (drop * 4) / 5;
 		if (restore >= drop)
 			restore = (drop * 4) / 5;
-		uint64_t settle = (uint64_t)peer->config.rtt_drop_settle * RIST_CLOCK;
+		uint64_t drop_settle = (uint64_t)peer->config.rtt_drop_settle * RIST_CLOCK;
+		/* Rejoin dwell is twice the drop dwell so a still-marginal link
+		 * cannot immediately flap back in. */
+		uint64_t restore_settle = drop_settle * 2;
 
 		enum rist_rtt_mute_action act = rist_rtt_mute_step(&peer->rtt_mute_state,
-				smoothed, drop, restore, settle, now);
+				smoothed, drop, restore, drop_settle, restore_settle, now);
 		if (act == RIST_RTT_MUTE_DROP) {
 			peer->rtt_muted = true;
 			peer->rtt_mute_count++;
@@ -4718,6 +4720,7 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 	ctx->stats_next_time = now;
 	ctx->checks_next_time = now;
 	uint64_t nacks_next_time = now;
+	uint64_t mute_check_next_time = now;
 	while(!atomic_load_explicit(&ctx->common.shutdown, memory_order_acquire)) {
 		// Conditional 5ms sleep that is woken by data coming in
 		pthread_mutex_lock(&(ctx->mutex));
@@ -4738,6 +4741,15 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 			ctx->checks_next_time += (uint64_t)1000 * (uint64_t)RIST_CLOCK;
 			pthread_mutex_lock(&ctx->common.peerlist_lock);
 			rist_timeout_check(&ctx->common, now);
+			pthread_mutex_unlock(&ctx->common.peerlist_lock);
+		}
+
+		/* Short tick so the configured settle is honoured, not quantised
+		 * to the 1 s check cadence. */
+		if (now > mute_check_next_time)
+		{
+			mute_check_next_time = now + (uint64_t)250 * (uint64_t)RIST_CLOCK;
+			pthread_mutex_lock(&ctx->common.peerlist_lock);
 			rist_sender_rtt_mute_check(ctx, now);
 			pthread_mutex_unlock(&ctx->common.peerlist_lock);
 		}

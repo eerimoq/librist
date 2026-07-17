@@ -221,11 +221,12 @@ struct rist_peer_config
 
 	/* Dynamic RTT-based bonded-leg muting (sender, Version 6+). A leg whose
 	 * smoothed RTT holds above rtt_drop for rtt_drop_settle is pulled from the
-	 * weighted payload rotation, rejoining once it holds below rtt_restore.
-	 * The last healthy leg is never muted. All ms; rtt_drop == 0 disables. */
+	 * payload rotation (retransmits reroute to a healthy leg) and rejoins once
+	 * it holds below rtt_restore for a longer dwell (quick to drop, slow to
+	 * rejoin). The last healthy leg is never muted. All ms; 0 disables. */
 	uint32_t rtt_drop;         /* smoothed-RTT ceiling; 0 = disabled */
 	uint32_t rtt_restore;      /* restore low-water; 0 = derive as 80% of rtt_drop */
-	uint32_t rtt_drop_settle;  /* dwell before a drop/restore transition */
+	uint32_t rtt_drop_settle;  /* dwell before muting (rejoin waits longer) */
 	uint32_t rtt_drop_trickle; /* 1-in-N redundant duplicate on a muted leg; 0 = hard mute */
 };
 

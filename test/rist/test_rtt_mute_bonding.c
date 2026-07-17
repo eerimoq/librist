@@ -193,10 +193,10 @@ int main(void) {
 	uint32_t mute_events_b = leg_b->rtt_mute_count;
 	fprintf(stderr, "leg B muted=%d mute_events=%u after %dms of spike\n",
 	        muted_b, mute_events_b, waited);
-	/* Measure the freeze AFTER the mute engages: leg B must carry no NEW unique
-	 * payload while healthy leg A keeps the stream flowing.  Retransmissions
-	 * (.retrans) legitimately still go to a muted leg, so isolate new payload
-	 * as (Δsent - Δretrans). */
+	/* Measure the freeze AFTER the mute engages. With trickle disabled on this
+	 * leg, a muted leg must carry neither new unique payload (diverted by the
+	 * balancer) nor retransmissions (rerouted to a healthy sibling), so its
+	 * total send rate collapses while healthy leg A keeps the stream flowing. */
 	uint64_t a0 = leg_a->stats_sender_instant.sent;
 	uint64_t b0 = leg_b->stats_sender_instant.sent;
 	uint32_t b0_retx = leg_b->stats_sender_instant.retrans;
@@ -206,9 +206,10 @@ int main(void) {
 	uint64_t b1 = leg_b->stats_sender_instant.sent;
 	uint32_t b1_retx = leg_b->stats_sender_instant.retrans;
 	int rx1 = rx_pkts;
-	uint64_t b_new_payload = (b1 - b0) - (uint64_t)(b1_retx - b0_retx);
-	fprintf(stderr, "while muted: dA=%"PRIu64" dB=%"PRIu64" (retx=%u, new=%"PRIu64") drx=%d\n",
-	        a1 - a0, b1 - b0, b1_retx - b0_retx, b_new_payload, rx1 - rx0);
+	uint64_t b_sent = b1 - b0;
+	uint32_t b_retx = b1_retx - b0_retx;
+	fprintf(stderr, "while muted: dA=%"PRIu64" dB=%"PRIu64" (retx=%u) drx=%d\n",
+	        a1 - a0, b_sent, b_retx, rx1 - rx0);
 
 	/* == Phase 2: leg B recovers; it must rejoin the bond == */
 	fprintf(stderr, "\n== phase 2: leg B RTT recovers ==\n");
@@ -292,15 +293,15 @@ int main(void) {
 		        a1 - a0, rx1 - rx0);
 		return 1;
 	}
-	/* The muted leg must carry essentially no NEW unique payload: 100% of new
-	 * payload should move to leg A.  A small residual is expected and correct
-	 * (retransmissions still reach a muted leg, and a couple of packets can be
-	 * in flight across the 1 Hz mute-transition boundary), so require the new
-	 * payload on B to collapse to under 10% of what leg A carries. */
-	if (b_new_payload * 10 >= (a1 - a0)) {
-		fprintf(stderr, "FAIL: muted leg B still carried significant NEW payload "
-		                "(new_B=%"PRIu64" vs new_A=%"PRIu64"; reroute did not "
-		                "take effect).\n", b_new_payload, a1 - a0);
+	/* With trickle disabled, a muted leg must go essentially silent: the
+	 * balancer diverts new payload and retransmissions are rerouted to the
+	 * healthy leg. A couple of packets can straddle the mute-transition
+	 * boundary, so require B's total send rate to collapse to under 10% of
+	 * what leg A carries. */
+	if (b_sent * 10 >= (a1 - a0)) {
+		fprintf(stderr, "FAIL: muted leg B still carried significant traffic "
+		                "(B=%"PRIu64" retx=%u vs A=%"PRIu64"; mute/reroute did "
+		                "not take effect).\n", b_sent, b_retx, a1 - a0);
 		return 1;
 	}
 	if (!restored_b) {

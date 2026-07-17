@@ -35,38 +35,38 @@ int main(void)
 		struct rist_rtt_mute_state st = {0};
 		enum rist_rtt_mute_action a = RIST_RTT_MUTE_NONE;
 		for (uint64_t t = 0; t < 10; t++)
-			a = rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, t);
+			a = rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, SETTLE, t);
 		expect("stays_active_below_ceiling", a, RIST_RTT_MUTE_NONE, st.muted, false);
 	}
 
 	/* Over the ceiling but not long enough to satisfy the dwell: no drop. */
 	{
 		struct rist_rtt_mute_state st = {0};
-		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 0); /* arm pending */
+		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 0); /* arm pending */
 		enum rist_rtt_mute_action a =
-			rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 1); /* dwell not met */
+			rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 1); /* dwell not met */
 		expect("no_drop_before_settle", a, RIST_RTT_MUTE_NONE, st.muted, false);
 	}
 
 	/* Sustained over the ceiling past the dwell: drop. */
 	{
 		struct rist_rtt_mute_state st = {0};
-		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 0);
-		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 1);
-		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 2);
+		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 0);
+		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 1);
+		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 2);
 		enum rist_rtt_mute_action a =
-			rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 3); /* now-since == SETTLE */
+			rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 3); /* now-since == SETTLE */
 		expect("drop_after_settle", a, RIST_RTT_MUTE_DROP, st.muted, true);
 	}
 
 	/* A transient dip back under the ceiling resets the dwell (anti-flap). */
 	{
 		struct rist_rtt_mute_state st = {0};
-		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 0);
-		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 1);
-		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, 2); /* dip: clears pending */
+		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 0);
+		rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 1);
+		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, SETTLE, 2); /* dip: clears pending */
 		enum rist_rtt_mute_action a =
-			rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, 3); /* re-arm, no drop yet */
+			rist_rtt_mute_step(&st, 900, DROP, RESTORE, SETTLE, SETTLE, 3); /* re-arm, no drop yet */
 		expect("dip_resets_dwell", a, RIST_RTT_MUTE_NONE, st.muted, false);
 	}
 
@@ -75,18 +75,18 @@ int main(void)
 		struct rist_rtt_mute_state st = { .muted = true };
 		enum rist_rtt_mute_action a = RIST_RTT_MUTE_NONE;
 		for (uint64_t t = 0; t < 10; t++)
-			a = rist_rtt_mute_step(&st, 450, DROP, RESTORE, SETTLE, t); /* in the band */
+			a = rist_rtt_mute_step(&st, 450, DROP, RESTORE, SETTLE, SETTLE, t); /* in the band */
 		expect("no_restore_in_hysteresis_band", a, RIST_RTT_MUTE_NONE, st.muted, true);
 	}
 
 	/* Sustained below the restore low-water past the dwell: restore. */
 	{
 		struct rist_rtt_mute_state st = { .muted = true };
-		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, 0);
-		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, 1);
-		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, 2);
+		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, SETTLE, 0);
+		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, SETTLE, 1);
+		rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, SETTLE, 2);
 		enum rist_rtt_mute_action a =
-			rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, 3);
+			rist_rtt_mute_step(&st, 100, DROP, RESTORE, SETTLE, SETTLE, 3);
 		expect("restore_after_settle", a, RIST_RTT_MUTE_RESTORE, st.muted, false);
 	}
 
@@ -94,7 +94,7 @@ int main(void)
 	{
 		struct rist_rtt_mute_state st = { .muted = true };
 		enum rist_rtt_mute_action a =
-			rist_rtt_mute_step(&st, 9999, 0, RESTORE, SETTLE, 0);
+			rist_rtt_mute_step(&st, 9999, 0, RESTORE, SETTLE, SETTLE, 0);
 		expect("disabled_forces_restore", a, RIST_RTT_MUTE_RESTORE, st.muted, false);
 	}
 
@@ -102,8 +102,29 @@ int main(void)
 	{
 		struct rist_rtt_mute_state st = {0};
 		enum rist_rtt_mute_action a =
-			rist_rtt_mute_step(&st, 9999, 0, RESTORE, SETTLE, 0);
+			rist_rtt_mute_step(&st, 9999, 0, RESTORE, SETTLE, SETTLE, 0);
 		expect("disabled_active_noop", a, RIST_RTT_MUTE_NONE, st.muted, false);
+	}
+
+	/* Asymmetric dwell: a leg drops fast (drop_settle) but only rejoins after
+	 * the longer restore_settle, so a marginal link cannot flap back in. With
+	 * drop_settle 1 and restore_settle 5, muting engages quickly... */
+	{
+		struct rist_rtt_mute_state st = {0};
+		rist_rtt_mute_step(&st, 900, DROP, RESTORE, 1, 5, 0); /* arm */
+		enum rist_rtt_mute_action a =
+			rist_rtt_mute_step(&st, 900, DROP, RESTORE, 1, 5, 1); /* fast drop */
+		expect("asymmetric_fast_drop", a, RIST_RTT_MUTE_DROP, st.muted, true);
+
+		/* ...but rejoining waits the full restore_settle: below the low-water
+		 * for less than restore_settle does NOT restore yet. */
+		rist_rtt_mute_step(&st, 100, DROP, RESTORE, 1, 5, 2); /* arm restore */
+		a = rist_rtt_mute_step(&st, 100, DROP, RESTORE, 1, 5, 5); /* dwell 3 < 5 */
+		expect("asymmetric_slow_restore_hold", a, RIST_RTT_MUTE_NONE, st.muted, true);
+
+		/* Past the longer window it finally restores. */
+		a = rist_rtt_mute_step(&st, 100, DROP, RESTORE, 1, 5, 7); /* dwell 5 == 5 */
+		expect("asymmetric_slow_restore_fires", a, RIST_RTT_MUTE_RESTORE, st.muted, false);
 	}
 
 	if (failures == 0) {

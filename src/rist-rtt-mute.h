@@ -28,20 +28,22 @@ struct rist_rtt_mute_state
 /* Advance the hysteresis machine for one leg by one sample.
  *
  * All RTT/time arguments share one unit (RIST_CLOCK ticks):
- *   smoothed_rtt : the leg's smoothed (EWMA) round-trip time
- *   drop         : ceiling; staying above it for settle mutes the leg
- *   restore      : low-water; staying below it for settle restores the leg
- *   settle       : dwell required before either transition (both directions)
- *   now          : monotonic tick
+ *   smoothed_rtt  : the leg's smoothed (EWMA) round-trip time
+ *   drop          : ceiling; staying above it for drop_settle mutes the leg
+ *   restore       : low-water; staying below it for restore_settle restores it
+ *   drop_settle   : dwell required before muting (active -> muted)
+ *   restore_settle: dwell required before rejoining (muted -> active)
+ *   now           : monotonic tick
  *
- * The drop/restore split (restore < drop) plus the settle dwell give the
- * hysteresis that stops a link flapping in and out of the bond.  A drop of 0
- * disables muting and restores the leg if it was muted.  Returns the
- * transition taken this step (NONE if the state is unchanged) and updates
- * *st in place. */
+ * The dwell is deliberately asymmetric (drop_settle short, restore_settle
+ * longer) so a bad leg is pulled quickly but a still-marginal one does not flap
+ * back in; the threshold split (restore < drop) is the spatial half of the
+ * hysteresis. A drop of 0 disables muting. Returns the transition taken this
+ * step (NONE if unchanged) and updates *st in place. */
 static inline enum rist_rtt_mute_action
 rist_rtt_mute_step(struct rist_rtt_mute_state *st, uint64_t smoothed_rtt,
-                   uint64_t drop, uint64_t restore, uint64_t settle, uint64_t now)
+                   uint64_t drop, uint64_t restore,
+                   uint64_t drop_settle, uint64_t restore_settle, uint64_t now)
 {
 	if (drop == 0) {
 		st->pending = false;
@@ -63,6 +65,7 @@ rist_rtt_mute_step(struct rist_rtt_mute_state *st, uint64_t smoothed_rtt,
 		st->pending_since = now;
 		return RIST_RTT_MUTE_NONE;
 	}
+	uint64_t settle = st->muted ? restore_settle : drop_settle;
 	if (now - st->pending_since < settle)
 		return RIST_RTT_MUTE_NONE;
 

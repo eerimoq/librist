@@ -35,12 +35,15 @@ Features:
     non-conformant sender). Set timing-mode=arrival to force arrival.
   - Bonded senders can auto-mute a failing leg by RTT. When a leg's smoothed
     RTT stays above ?rtt-drop=<ms> for ?rtt-drop-settle=<ms>, it is pulled out
-    of the weighted payload rotation so the healthy leg(s) carry 100% of the
-    stream, and it rejoins once RTT stays below ?rtt-restore=<ms> for the same
-    dwell (hysteresis prevents flapping). The connection stays up and keeps
-    probing RTT while muted; a low-rate redundant trickle (?rtt-drop-trickle=<N>,
-    1-in-N duplicate packets, on by default) keeps the muted leg measured so
-    recovery is warm rather than a cold cut-over (set 0 for a hard mute). The
+    of the weighted payload rotation and its retransmissions are rerouted to a
+    healthy leg, so the healthy leg(s) carry 100% of the stream and no traffic
+    rides the slow path. It rejoins after RTT stays below ?rtt-restore=<ms> for
+    a longer, conservative dwell (asymmetric hysteresis: quick to drop, slow to
+    rejoin, so a still-marginal link cannot flap back in). The connection stays
+    up and keeps probing RTT while muted; a low-rate redundant trickle
+    (?rtt-drop-trickle=<N>, 1-in-N duplicate packets, on by default) keeps the
+    muted leg measured so recovery is warm rather than a cold cut-over (set 0
+    for a hard mute). The
     last healthy leg is never muted. Per-leg mute state (rtt_muted) and a
     cumulative mute-event counter (rtt_mute_events) are exposed in the sender
     stats JSON and the Prometheus exporter. Disabled by default (rtt-drop=0);

@@ -33,7 +33,7 @@ const char help_urlstr[] = "\nUsage: append to end of individual rist:// url(s) 
 "    param weight=#  default weight for multi-path load balancing. Use 0 for duplicate paths.\n"
 "    param rtt-drop=###  smoothed-RTT ceiling in ms; a bonded leg above it is muted (0=disabled)\n"
 "    param rtt-restore=###  RTT in ms to rejoin the bond (0=derive 80% of rtt-drop)\n"
-"    param rtt-drop-settle=###  ms a leg must hold over/under threshold before muting/restoring\n"
+"    param rtt-drop-settle=###  ms a leg must hold over the ceiling before muting (rejoin uses a longer, conservative dwell)\n"
 "    param rtt-drop-trickle=#  send 1-in-N redundant packets on a muted leg to keep it measured (default 100 ~1%, 0=hard mute)\n"
 "    param username=abcde  Username to identify this peer during authentication\n"
 "    param password=abcde  Password corresponding to this peer's Username\n"

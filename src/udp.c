@@ -1102,6 +1102,40 @@ size_t rist_get_sender_retry_queue_size(struct rist_sender *ctx)
 	return retry_queue_size;
 }
 
+/* A retransmission normally egresses the very leg the NACK arrived on. When
+ * that leg is RTT-muted its latency makes the recovery packet arrive too late
+ * to fill the receiver's gap, so it only wastes bandwidth and keeps the glitch
+ * on screen. Pick the lowest-RTT healthy bonded sibling that shares the muted
+ * leg's sequence domain and egress there instead; every bonded leg carries the
+ * same flow, so the receiver accepts the retransmit on any of them. Returns the
+ * original leg when no healthy sibling qualifies (e.g. the muted leg is the
+ * last one standing), so recovery still degrades gracefully. Caller holds
+ * peerlist_lock. */
+static struct rist_peer *rist_retx_healthy_egress(struct rist_sender *ctx,
+						  struct rist_peer *muted)
+{
+	uint64_t now = timestampNTP_u64();
+	struct rist_peer *best = NULL;
+	uint64_t best_rtt = UINT64_MAX;
+	for (struct rist_peer *peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!peer->is_data || peer->parent || peer->listening)
+			continue;
+		if (peer->rtt_muted || !peer->authenticated)
+			continue;
+		if (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)
+			continue;
+		struct rist_peer *egress = peer->peer_data ? peer->peer_data : peer;
+		if (egress->remote_supports_advanced != muted->remote_supports_advanced)
+			continue;
+		uint64_t rtt = egress->eight_times_rtt ? egress->eight_times_rtt : UINT64_MAX;
+		if (rtt < best_rtt) {
+			best_rtt = rtt;
+			best = egress;
+		}
+	}
+	return best ? best : muted;
+}
+
 /* This function must return, 0 when there is nothing to send, < 0 on error and > 0 for bytes sent */
 ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 {
@@ -1133,6 +1167,14 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	struct rist_peer *idx_target = retry->peer->peer_data ? retry->peer->peer_data : retry->peer;
 	bool main_domain_retx = rist_retx_use_rtp_domain(ctx->common.profile,
 							 idx_target->remote_supports_advanced);
+
+	/* Never egress a retransmit on an RTT-muted leg: its latency defeats the
+	 * recovery. Redirect to the healthiest bonded sibling in the same
+	 * sequence domain (idx_target when none qualifies, i.e. no behaviour
+	 * change unless auto-mute has actually pulled this leg). */
+	struct rist_peer *egress = idx_target;
+	if (idx_target->rtt_muted)
+		egress = rist_retx_healthy_egress(ctx, idx_target);
 
 	// If they request a non-sense seq number, we will catch it when we check the seq number against
 	// the one on that buffer position and it does not match
@@ -1230,13 +1272,13 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 
 	uint16_t src_port = buffer->src_port;
 	if (src_port == 0)
-		src_port = 32768 + retry->peer->peer_data->adv_peer_id;
+		src_port = 32768 + egress->adv_peer_id;
 	uint32_t retry_wire_seq = (ctx->common.profile == RIST_PROFILE_ADVANCED && !main_domain_retx) ? buffer->seq : (uint32_t)buffer->seq_rtp;
-	ret = rist_send_seq_rtcp(retry->peer->peer_data, retry_wire_seq, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (retry->peer->peer_data->config.virt_dst_port & ~1UL), true, ctx->sender_queue[idx]->ts_null_bytes);
+	ret = rist_send_seq_rtcp(egress, retry_wire_seq, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (egress->config.virt_dst_port & ~1UL), true, ctx->sender_queue[idx]->ts_null_bytes);
 	// update bandwidth value
 	rist_calculate_bitrate(ret, retry_bw);
 
-	if ((ret == (size_t)-1) || (!retry->peer->peer_data->compression && ret < buffer->size)) {
+	if ((ret == (size_t)-1) || (!egress->compression && ret < buffer->size)) {
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 			"Resending of packet failed %zu != %zu for seq %"PRIu32"\n", ret, buffer->size, retry->seq);
 		retry->peer->stats_sender_instant.retrans_skip++;
@@ -1244,13 +1286,8 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	}
 
 	buffer->transmit_count++;
-	if (retry->peer->peer_data) {
-		retry->peer->peer_data->stats_sender_instant.retrans++;
-		retry->peer->peer_data->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
-	} else {
-		retry->peer->stats_sender_instant.retrans++;
-		retry->peer->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
-	}
+	egress->stats_sender_instant.retrans++;
+	egress->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
 	return ret;
 }
 
