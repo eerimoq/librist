@@ -99,7 +99,7 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint32_t seq_rtp, uint8_t payload
 		memset(&params, 0, sizeof(params));
 
 		params.seq = seq_rtp;
-		params.timestamp = (uint32_t)((source_time * 1000000ULL) >> 16);
+		params.timestamp = timestampRTP_u32(1, source_time);
 		params.ssrc = rist_adv_ssrc_protected(ctx->adv_ssrc_base);
 		params.enc_type = RIST_ADV_TYPE_DIRECT;
 		params.psk_mode = RIST_ADV_PSK_NONE;

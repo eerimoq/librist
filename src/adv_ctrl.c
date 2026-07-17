@@ -97,7 +97,7 @@ int rist_adv_send_nack_bitmask(struct rist_peer *peer,
 	ctrl[off++] = blp & 0xFF;
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
-	uint32_t ts = (uint32_t)((timestampNTP_u64() * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, timestampNTP_u64());
 	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
 
 	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);
@@ -151,7 +151,7 @@ int rist_adv_send_nack_range(struct rist_peer *peer,
 	ctrl[off++] = nalp & 0xFF;
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
-	uint32_t ts = (uint32_t)((timestampNTP_u64() * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, timestampNTP_u64());
 	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
 
 	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);
@@ -213,7 +213,7 @@ int rist_adv_send_rtt_echo_request(struct rist_peer *peer)
 	ctrl[off++] = 0; ctrl[off++] = 0; ctrl[off++] = 0; ctrl[off++] = 0;
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
-	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, ntp);
 
 	int total = rist_adv_build_control(pkt, seq, ts, req_ssrc, ctrl, off);
 	if (total < 0)
@@ -270,7 +270,7 @@ int rist_adv_send_rtt_echo_response(struct rist_peer *peer,
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
 	uint64_t ntp = timestampNTP_u64();
-	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, ntp);
 	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
 
 	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);
@@ -334,7 +334,7 @@ int rist_adv_send_keepalive(struct rist_peer *peer)
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
 	uint64_t ntp = timestampNTP_u64();
-	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, ntp);
 	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
 
 	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);
@@ -397,7 +397,7 @@ int rist_adv_send_unsupported(struct rist_peer *peer,
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
 	uint64_t ntp = timestampNTP_u64();
-	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, ntp);
 
 	int total = rist_adv_build_control(pkt, seq, ts, resp_ssrc, ctrl, off);
 	if (total < 0)
@@ -431,7 +431,7 @@ int rist_adv_send_type8(struct rist_peer *peer,
 	struct rist_adv_params params;
 	memset(&params, 0, sizeof(params));
 	params.seq = ctx->adv_seq_unprotected++;
-	params.timestamp = (uint32_t)((timestampNTP_u64() * 1000000ULL) >> 16);
+	params.timestamp = timestampRTP_u32(1, timestampNTP_u64());
 	params.ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
 	params.enc_type = RIST_ADV_TYPE_GRE_MAIN;
 	params.psk_mode = RIST_ADV_PSK_NONE;
@@ -488,7 +488,7 @@ int rist_adv_send_psk_nonce(struct rist_peer *peer,
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
 	uint64_t ntp = timestampNTP_u64();
-	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, ntp);
 	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
 
 	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);
@@ -558,7 +558,7 @@ int rist_adv_send_flow_attr(struct rist_peer *peer)
 
 	uint32_t seq = ctx->adv_seq_unprotected++;
 	uint64_t ntp = timestampNTP_u64();
-	uint32_t ts = (uint32_t)((ntp * 1000000ULL) >> 16);
+	uint32_t ts = timestampRTP_u32(1, ntp);
 	uint32_t ssrc = rist_adv_ssrc_unprotected(ctx->adv_ssrc_base);
 
 	int total = rist_adv_build_control(pkt, seq, ts, ssrc, ctrl, off);

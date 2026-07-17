@@ -53,6 +53,13 @@ Fable 5 security audit:
     address buffer.
 
 Bug Fixes:
+  - Advanced Profile senders now emit a spec-conformant RTP timestamp. The
+    1 MHz timestamp (TR-06-3 Section 5.2.1) was built with a >> 16 shift that
+    ran the clock 65536x too fast and wrapped every ~65 ms; the sender now
+    writes the correct microsecond value on both media data and control
+    messages. No librist receiver uses this field (the receive path clocks
+    off packet arrival), so only the on-wire value changes; it matters for
+    third-party TR-06-3 receivers that read it.
   - Public peer getters no longer crash on NULL arguments (issue #226).
     rist_peer_get_cname() returns 0 when the output pointer is NULL (it
     already guarded the peer), rist_peer_get_id() returns 0 on a NULL peer,
