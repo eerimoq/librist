@@ -33,6 +33,7 @@
 #include "librist/logging.h"
 #include "proto/gre.h"
 #include "proto/adv.h"
+#include "rist-adv-ts.h"
 
 struct cJSON;
 
@@ -671,6 +672,7 @@ struct rist_peer {
 	/* Advanced Profile (TR-06-3) peer state */
 	bool is_advanced;              /* Peer operating in Advanced Profile mode */
 	bool remote_supports_advanced; /* Remote advertised I=1 in keep-alive */
+	struct rist_adv_ts_state rx_adv_ts; /* receive-side 1 MHz source-clock rebuild */
 
 	/* compression flag (sender only) */
 	bool compression;

@@ -880,9 +880,9 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 		// TODO: record stats
 		struct rist_buffer *b = f->receiver_queue[idx];
 		/* Match on seq: the slot index is derived from the sequence number,
-		 * and source_time is the arrival time on the Advanced path, so it
-		 * cannot identify a genuine duplicate. A different seq in this slot
-		 * is a stale entry from an earlier ring cycle and is replaced below. */
+		 * and source_time need not be unique per packet, so it cannot
+		 * identify a genuine duplicate. A different seq in this slot is a
+		 * stale entry from an earlier ring cycle and is replaced below. */
 		if (b->seq == seq) {
 			rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Dupe! %"PRIu32"/%zu\n", seq, idx);
 			pthread_mutex_lock(&(get_cctx(peer)->stats_lock));
@@ -3307,7 +3307,20 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 							return;
 						}
 
-						uint64_t adv_source_time = now;
+						/* Stamp with the sender's timeline rebuilt from the 1 MHz
+						 * RTP timestamp so the dejitter buffer smooths off the
+						 * source clock like the Main path, not raw arrival. ARRIVAL
+						 * mode keeps arrival; otherwise the reconstruct dejitters off
+						 * the source clock immediately and, because older releases
+						 * emitted a broken clock, corrects to arrival after the first
+						 * second if the sender's clock is not advancing at real time. */
+						uint64_t adv_source_time;
+						if (RIST_UNLIKELY(p->config.timing_mode == RIST_TIMING_MODE_ARRIVAL))
+							adv_source_time = now;
+						else
+							adv_source_time = rist_adv_ts_reconstruct(&p->rx_adv_ts,
+								adv_parsed.timestamp, now,
+								ONE_SECOND, !retry);
 
 						if (peer->receiver_ctx) {
 							rist_calculate_bitrate(recv_bufsize, &p->bw);

@@ -149,6 +149,14 @@ test_retx_seq_domain = executable('test_retx_seq_domain',
                                   include_directories : inc)
 test('retx_seq_domain', test_retx_seq_domain, suite:['unit'])
 
+# Advanced Profile receive-side 1 MHz source-clock reconstruction
+# (rist_adv_ts_reconstruct): wrap-safe delta accumulation, retransmit
+# positioning, and the bounded-delta fallback to arrival. Pure, link-free.
+test_adv_ts_reconstruct = executable('test_adv_ts_reconstruct',
+                                     'test_adv_ts_reconstruct.c',
+                                     include_directories : inc)
+test('adv_ts_reconstruct', test_adv_ts_reconstruct, suite:['unit'])
+
 # TUN CIDR parsing (IPv4 + IPv6) used by risttunnel -l.
 test_tun_cidr_parse = executable('test_tun_cidr_parse',
                                  'test_tun_cidr_parse.c',
