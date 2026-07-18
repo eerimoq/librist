@@ -10,6 +10,16 @@ Changes for 0.2.19-rc2:
 ---------------------------------
 
 Features:
+  - Advanced Profile receivers now dejitter off the sender's clock. The
+    receive path reconstructs a monotonic source timeline from the 1 MHz
+    RTP timestamp (TR-06-3 Section 5.2.1) and stamps packets with it instead
+    of local arrival, so output spacing follows the source cadence like the
+    Main profile. Reconstruction is wrap-safe (the 32-bit 1 MHz field rolls
+    over about every 72 minutes). Because librist releases before this one
+    emitted this timestamp on a broken clock, the receiver verifies the
+    rebuilt clock over the first second and corrects to arrival timing for
+    the rest of the session if it is not advancing at real time (an older,
+    non-conformant sender). Set timing-mode=arrival to force arrival.
   - EAP SHA256-SRP6a gains Version 4: the passphrase pushed over an
     authenticated SRP session is now carried under AES-256-GCM (authenticated
     encryption) instead of the v3 AES-CTR (confidentiality-only) form. Keys are
