@@ -138,6 +138,14 @@ Bug Fixes:
     fed the recovery_maxbitrate retransmit throttle, which could refuse
     reactive retransmits while the link was not actually saturated. The
     shared path now skips accounting for Advanced media it did not send.
+  - A (re)connecting sender leg now sends its SDES the moment it authenticates,
+    instead of waiting for the next periodic RTCP tick. The weighted balancer
+    starts forwarding data on a leg as soon as EAP/SRP auth completes, but the
+    receiver drops data on a leg until it has seen the SDES that binds the leg
+    to the flow. On every reconnect the first data raced ahead of the SDES, so
+    the receiver discarded roughly a full RTCP interval of packets ("handshake
+    still pending"); this is most visible when a bonded leg flaps repeatedly.
+    Emitting the SDES up front closes that window.
   - Advanced Profile senders now emit a spec-conformant RTP timestamp. The
     1 MHz timestamp (TR-06-3 Section 5.2.1) was built with a >> 16 shift that
     ran the clock 65536x too fast and wrapped every ~65 ms; the sender now

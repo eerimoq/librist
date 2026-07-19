@@ -4080,6 +4080,10 @@ protocol_bypass:
 						_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
 						_librist_proto_gre_send_buffer_negotiation(p, peer->sender_ctx->sender_recover_min_time, 0);
 					}
+					/* Emit the binding SDES now, not on the next periodic
+					 * tick, so it precedes this leg's first forwarded data. */
+					if (!p->receiver_mode)
+						rist_sender_periodic_rtcp(p);
 				}
 			}
 #else
