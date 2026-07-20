@@ -221,6 +221,20 @@ if have_srp
 		     find_program('test_bonded_leg_flap_netns.sh'),
 		     args: [ristsender_exe, ristreceiver_exe],
 		     suite: ['netns', 'nat', 'multipath', 'srp'], timeout: 120)
+		# Companion: a sub-grace stall must NOT re-auth. Same topology, but a
+		# short silence (under the buffer-derived grace) must ride through on
+		# the existing session instead of tearing down and re-handshaking.
+		test('Bonded SRP leg rides through a sub-grace stall without re-auth (srp, netns)',
+		     find_program('test_bonded_leg_stall_grace_netns.sh'),
+		     args: [ristsender_exe, ristreceiver_exe],
+		     suite: ['netns', 'nat', 'multipath', 'srp'], timeout: 120)
+		# A leg muted for high RTT plus its only sibling stalled for silence
+		# must not leave the balancer with zero carriers: the receiver must
+		# keep getting data on the reinstated leg instead of starving.
+		test('Bonded muted+stalled split keeps a carrier (srp, netns)',
+		     find_program('test_bonded_carrier_never_starved_netns.sh'),
+		     args: [ristsender_exe, ristreceiver_exe],
+		     suite: ['netns', 'nat', 'multipath', 'srp'], timeout: 120)
 	endif
 endif
 

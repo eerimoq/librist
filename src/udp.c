@@ -950,6 +950,8 @@ void rist_sender_send_data_balanced(struct rist_sender *ctx, struct rist_buffer 
 {
 	struct rist_peer *peer;
 	struct rist_peer *selected_peer_by_weight = NULL;
+	struct rist_peer *fallback = NULL;
+	uint64_t fallback_rtt = UINT64_MAX;
 	uint32_t max_remainder = 0;
 	int peercnt;
 	bool looped = false;
@@ -987,9 +989,11 @@ peer_select:
 
 		/* RTT-muted leg: skipped in the unique-payload rotation. With
 		 * ?rtt-drop-trickle=N, still send a deduped duplicate every Nth packet
-		 * so RTT keeps sampling for a warm restore without stalling the buffer. */
-		if (peer->rtt_muted) {
-			if (peer->config.rtt_drop_trickle > 0 && !looped && !peer->dead) {
+		 * so RTT keeps sampling for a warm restore without stalling the buffer.
+		 * A stalled (briefly silent) leg is skipped too but never trickled: its
+		 * return path is down, so RTCP/keepalive alone probes for recovery. */
+		if (peer->rtt_muted || peer->stalled) {
+			if (peer->rtt_muted && peer->config.rtt_drop_trickle > 0 && !looped && !peer->dead) {
 				if (++peer->rtt_trickle_counter >= peer->config.rtt_drop_trickle) {
 					peer->rtt_trickle_counter = 0;
 					uint8_t *payload = buffer->data;
@@ -1001,6 +1005,18 @@ peer_select:
 				ctx->weight_counter = ctx->total_weight;
 			}
 			peer->w_count = peer->config.weight;
+			/* Remember the best skipped leg for the safety net below: a
+			 * muted (late but deliverable) leg beats a stalled one (return
+			 * path down); lowest RTT breaks ties. */
+			if (!peer->dead) {
+				uint64_t s = peer->eight_times_rtt ? peer->eight_times_rtt / 8 : UINT64_MAX;
+				if (!fallback
+				    || (fallback->stalled && !peer->stalled)
+				    || (fallback->stalled == peer->stalled && s < fallback_rtt)) {
+					fallback = peer;
+					fallback_rtt = s;
+				}
+			}
 			continue;
 		}
 		peercnt++;
@@ -1076,6 +1092,15 @@ peer_select:
 		if (!looped && !selected_peer_by_weight && peercnt > 0)
 			goto peer_select;
 	}
+
+	/* Safety net: every eligible leg was rtt-muted or stalled, so nothing
+	 * carried this packet. The mute and stall guards run independently and
+	 * can jointly leave no carrier; never silently drop a live packet when a
+	 * usable leg exists. Egress on the best skipped leg. */
+	if (peercnt == 0 && !selected_peer_by_weight && fallback) {
+		uint8_t *payload = buffer->data;
+		rist_send_common_rtcp(fallback, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
+	}
 }
 
 static size_t rist_sender_index_get(struct rist_sender *ctx, uint32_t seq,
@@ -1102,15 +1127,10 @@ size_t rist_get_sender_retry_queue_size(struct rist_sender *ctx)
 	return retry_queue_size;
 }
 
-/* A retransmission normally egresses the very leg the NACK arrived on. When
- * that leg is RTT-muted its latency makes the recovery packet arrive too late
- * to fill the receiver's gap, so it only wastes bandwidth and keeps the glitch
- * on screen. Pick the lowest-RTT healthy bonded sibling that shares the muted
- * leg's sequence domain and egress there instead; every bonded leg carries the
- * same flow, so the receiver accepts the retransmit on any of them. Returns the
- * original leg when no healthy sibling qualifies (e.g. the muted leg is the
- * last one standing), so recovery still degrades gracefully. Caller holds
- * peerlist_lock. */
+/* Pick the lowest-RTT healthy bonded sibling in the same sequence domain to
+ * egress a retransmit when the NACK's own leg is RTT-muted or stalled (its
+ * latency/silence would make the recovery packet arrive too late). Returns the
+ * original leg if none qualifies. Caller holds peerlist_lock. */
 static struct rist_peer *rist_retx_healthy_egress(struct rist_sender *ctx,
 						  struct rist_peer *muted)
 {
@@ -1120,7 +1140,7 @@ static struct rist_peer *rist_retx_healthy_egress(struct rist_sender *ctx,
 	for (struct rist_peer *peer = ctx->common.PEERS; peer; peer = peer->next) {
 		if (!peer->is_data || peer->parent || peer->listening)
 			continue;
-		if (peer->rtt_muted || !peer->authenticated)
+		if (peer->rtt_muted || peer->stalled || !peer->authenticated)
 			continue;
 		if (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)
 			continue;
@@ -1168,12 +1188,10 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	bool main_domain_retx = rist_retx_use_rtp_domain(ctx->common.profile,
 							 idx_target->remote_supports_advanced);
 
-	/* Never egress a retransmit on an RTT-muted leg: its latency defeats the
-	 * recovery. Redirect to the healthiest bonded sibling in the same
-	 * sequence domain (idx_target when none qualifies, i.e. no behaviour
-	 * change unless auto-mute has actually pulled this leg). */
+	/* Redirect off a muted/stalled leg to a healthy sibling (unchanged when
+	 * none qualifies, so no behaviour change unless a leg was pulled). */
 	struct rist_peer *egress = idx_target;
-	if (idx_target->rtt_muted)
+	if (idx_target->rtt_muted || idx_target->stalled)
 		egress = rist_retx_healthy_egress(ctx, idx_target);
 
 	// If they request a non-sense seq number, we will catch it when we check the seq number against

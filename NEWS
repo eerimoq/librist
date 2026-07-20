@@ -146,6 +146,24 @@ Bug Fixes:
     the receiver discarded roughly a full RTCP interval of packets ("handshake
     still pending"); this is most visible when a bonded leg flaps repeatedly.
     Emitting the SDES up front closes that window.
+  - Bonded legs survive a brief stall without a full re-handshake, and the
+    peer liveness timeout is now principled. A leg that went silent was declared
+    dead after a hardcoded 250 ms and had to re-run EAP/SRP from cold on return,
+    so on a flappy link every RTT spike past 250 ms self-inflicted a re-auth and
+    the receiver dropped data on the leg until the handshake rebuilt. Two
+    changes fix this. First, routing and session lifetime are split: the sender
+    pulls a briefly-silent leg from the payload rotation within a few RTCP
+    intervals (rerouting its share and its retransmissions to a healthy sibling),
+    while the authenticated session is kept far longer. Second, the teardown is
+    the larger of the configured session_timeout and twice the receiver buffer,
+    and session_timeout now defaults to the documented RIST_DEFAULT_SESSION_TIMEOUT
+    (2000 ms) with a floor of a few RTCP intervals, instead of the old 250 ms; a
+    leg that returns within that window resumes on the existing session with no
+    re-auth. The last leg with a live return path is never pulled, so a
+    single-path stream is never cut. Because a leg can be pulled either for
+    high RTT or for silence, the two are reconciled so they never pull every
+    leg at once: a leg is muted only while another stays a carrier, and the
+    balancer never drops data while a usable leg remains.
   - Advanced Profile senders now emit a spec-conformant RTP timestamp. The
     1 MHz timestamp (TR-06-3 Section 5.2.1) was built with a >> 16 shift that
     ran the clock 65536x too fast and wrapped every ~65 ms; the sender now

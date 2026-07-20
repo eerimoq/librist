@@ -1672,17 +1672,18 @@ struct rist_peer *_librist_peer_create_common(struct rist_common_ctx *cctx, stru
 		p->rtcp_keepalive_interval = config->keepalive_interval * RIST_CLOCK;
 	}
 
-	if (config->session_timeout > 0) {
-		if (config->session_timeout < 250) {
-			rist_log_priv(cctx, RIST_LOG_WARN, "The configured (%d ms) peer session timeout is too small, using %d ms instead\n",
-				config->session_timeout, 250);
-			p->session_timeout = 250 * RIST_CLOCK;
-		}
-		else
-			p->session_timeout = config->session_timeout * RIST_CLOCK;
-	}
-	else {
-		p->session_timeout = 250 * RIST_CLOCK;
+	/* Unset session_timeout means the documented default; floored at a few
+	 * RTCP intervals so a peer is never declared dead before its heartbeat
+	 * could have arrived. */
+	uint64_t min_liveness = RIST_LIVENESS_MIN_PINGS * p->rtcp_keepalive_interval;
+	if (config->session_timeout > 0)
+		p->session_timeout = (uint64_t)config->session_timeout * RIST_CLOCK;
+	else
+		p->session_timeout = (uint64_t)RIST_DEFAULT_SESSION_TIMEOUT * RIST_CLOCK;
+	if (p->session_timeout < min_liveness) {
+		rist_log_priv(cctx, RIST_LOG_WARN, "The configured (%"PRIu64" ms) peer session timeout is below %"PRIu64" ms (%d RTCP intervals), using the floor instead\n",
+			p->session_timeout / RIST_CLOCK, min_liveness / RIST_CLOCK, RIST_LIVENESS_MIN_PINGS);
+		p->session_timeout = min_liveness;
 	}
 
 	if (cctx->profile > RIST_PROFILE_SIMPLE) {
@@ -4576,6 +4577,15 @@ static void receiver_peer_events(struct rist_receiver *ctx, uint64_t now)
 	pthread_mutex_unlock(&ctx->common.peerlist_lock);
 }
 
+/* Silence before an authenticated leg is torn down and re-handshaked: the
+ * configured session_timeout, or twice the receiver buffer when that is larger
+ * (a leg returning within the buffer window can still contribute packets). */
+static inline uint64_t rist_peer_liveness_timeout(const struct rist_peer *peer)
+{
+	uint64_t buf = 2 * peer->recovery_buffer_ticks;
+	return buf > peer->session_timeout ? buf : peer->session_timeout;
+}
+
 void rist_timeout_check(struct rist_common_ctx *cctx, uint64_t now)
 {
 	struct rist_peer *peer = cctx->PEERS;
@@ -4589,7 +4599,7 @@ void rist_timeout_check(struct rist_common_ctx *cctx, uint64_t now)
 			last_rtcp_received = peer->peer_rtcp->last_pkt_received;
 		if (!peer->dead && now > last_rtcp_received && last_rtcp_received > 0)
 		{
-			if ((now - last_rtcp_received) > peer->session_timeout)
+			if ((now - last_rtcp_received) > rist_peer_liveness_timeout(peer))
 			{
 				rist_log_priv2(cctx->logging_settings, RIST_LOG_WARN, "Listening peer %u timed out after %"PRIu64" ms\n", peer->adv_peer_id,
 					(now - last_rtcp_received)/ RIST_CLOCK);
@@ -4618,28 +4628,90 @@ void rist_timeout_check(struct rist_common_ctx *cctx, uint64_t now)
 	}
 }
 
-/* True for a bonded data leg that participates in weighted balancing and has
- * auto-mute configured. Listeners, children, and duplicate (weight 0) legs are
- * out of scope. Caller must hold peerlist_lock. */
-static inline bool rist_peer_rtt_mute_eligible(const struct rist_peer *peer)
+/* True for a bonded data leg that participates in weighted balancing.
+ * Listeners, children, and duplicate (weight 0) legs are out of scope. */
+static inline bool rist_peer_bonded_data_leg(const struct rist_peer *peer)
 {
 	return peer->is_data && !peer->parent && !peer->listening
-		&& peer->config.rtt_drop > 0
 		&& peer->config.weight != RIST_PEER_WEIGHT_DUPLICATE;
 }
 
-/* Evaluate the RTT hysteresis for every eligible bonded leg and flip
- * peer->rtt_muted. Runs on a short tick (see the sender loop) with
- * peerlist_lock held. The last healthy leg is never muted. */
+/* True for a bonded data leg that also has RTT auto-mute configured.
+ * Caller must hold peerlist_lock. */
+static inline bool rist_peer_rtt_mute_eligible(const struct rist_peer *peer)
+{
+	return rist_peer_bonded_data_leg(peer) && peer->config.rtt_drop > 0;
+}
+
+/* Silent for a few probe intervals: well short of the liveness timeout, since
+ * fast-mute only reroutes payload rather than tearing the session down. Scales
+ * with the configured keepalive_interval. */
+static inline bool rist_peer_stall_silent(const struct rist_peer *peer, uint64_t now)
+{
+	uint64_t thr = RIST_STALL_MUTE_PINGS * peer->rtcp_keepalive_interval;
+	return peer->last_pkt_received > 0 && now > peer->last_pkt_received
+		&& (now - peer->last_pkt_received) > thr;
+}
+
+/* Fast-mute briefly-silent bonded legs so their payload reroutes to a healthy
+ * sibling rather than pouring into a stalled path until the liveness timeout
+ * tears the session down. Any bonded leg qualifies (no rtt-drop needed); the
+ * flag is recomputed each tick, so a resumed leg clears at once. The last leg
+ * with a live return path is never muted. Short tick, peerlist_lock held. */
+static void rist_sender_stall_check(struct rist_sender *ctx, uint64_t now)
+{
+	struct rist_peer *peer;
+	int eligible = 0, live = 0;
+
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!rist_peer_bonded_data_leg(peer))
+			continue;
+		eligible++;
+		if (!rist_peer_stall_silent(peer, now))
+			live++;
+	}
+	/* Nothing to fail over to: never stall-mute a single leg. */
+	if (eligible < 2) {
+		for (peer = ctx->common.PEERS; peer; peer = peer->next)
+			peer->stalled = false;
+		return;
+	}
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!rist_peer_bonded_data_leg(peer)) {
+			peer->stalled = false;
+			continue;
+		}
+		bool silent = rist_peer_stall_silent(peer, now);
+		/* keep every leg sending if all are silent, rather than black out */
+		bool stall = silent && live > 0;
+		if (stall && !peer->stalled)
+			rist_log_priv(&ctx->common, RIST_LOG_INFO,
+				"Peer %"PRIu32" stalled: silent %"PRIu64"ms, rerouting payload to healthy leg(s)\n",
+				peer->adv_peer_id, (now - peer->last_pkt_received) / RIST_CLOCK);
+		else if (!stall && peer->stalled)
+			rist_log_priv(&ctx->common, RIST_LOG_INFO,
+				"Peer %"PRIu32" resumed from stall\n", peer->adv_peer_id);
+		peer->stalled = stall;
+	}
+}
+
+/* Advance the RTT hysteresis for every eligible bonded leg, then decide which
+ * legs are actually pulled from the payload rotation. rtt_mute_state.muted is
+ * the *desired* state; peer->rtt_muted (what the balancer skips) is only set
+ * when pulling the leg still leaves a carrier -- a bonded leg that is neither
+ * muted nor stalled. Since the stall check runs first, a leg that wants mute
+ * but whose only sibling is stalled is simply kept carrying, never actually
+ * muted: that avoids blacking out the bond and, because the hysteresis state is
+ * left untouched, avoids re-muting (and re-counting/logging) it every dwell.
+ * Caller holds peerlist_lock; runs on a short tick (see the sender loop). */
 static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
 {
 	struct rist_peer *peer;
 	int eligible = 0;
 
-	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+	for (peer = ctx->common.PEERS; peer; peer = peer->next)
 		if (rist_peer_rtt_mute_eligible(peer))
 			eligible++;
-	}
 	/* Nothing to fail over to: never mute a single leg. */
 	if (eligible < 2)
 		return;
@@ -4661,50 +4733,54 @@ static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
 		/* Rejoin dwell is twice the drop dwell so a still-marginal link
 		 * cannot immediately flap back in. */
 		uint64_t restore_settle = drop_settle * 2;
+		rist_rtt_mute_step(&peer->rtt_mute_state, smoothed, drop, restore,
+				   drop_settle, restore_settle, now);
+	}
 
-		enum rist_rtt_mute_action act = rist_rtt_mute_step(&peer->rtt_mute_state,
-				smoothed, drop, restore, drop_settle, restore_settle, now);
-		if (act == RIST_RTT_MUTE_DROP) {
+	/* Count natural carriers, and remember the lowest-RTT leg that wants mute
+	 * but could still carry (not stalled), to keep if none remain. */
+	int carriers = 0;
+	struct rist_peer *keep = NULL;
+	uint64_t keep_rtt = UINT64_MAX;
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!rist_peer_bonded_data_leg(peer))
+			continue;
+		bool want = rist_peer_rtt_mute_eligible(peer) && peer->rtt_mute_state.muted;
+		if (!want && !peer->stalled) {
+			carriers++;
+		} else if (want && !peer->stalled) {
+			uint64_t smoothed = peer->eight_times_rtt ? peer->eight_times_rtt / 8 : UINT64_MAX;
+			if (smoothed < keep_rtt) { keep_rtt = smoothed; keep = peer; }
+		}
+	}
+	if (carriers > 0)
+		keep = NULL; /* a natural carrier exists; nothing has to be kept */
+
+	/* Apply, counting/logging only genuine peer->rtt_muted transitions. */
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!rist_peer_rtt_mute_eligible(peer))
+			continue;
+		bool mute = peer->rtt_mute_state.muted && peer != keep;
+		if (mute && !peer->rtt_muted) {
 			peer->rtt_muted = true;
 			peer->rtt_mute_count++;
 			rist_log_priv(&ctx->common, RIST_LOG_INFO,
 				"Peer %"PRIu32" muted: smoothed RTT %"PRIu64"ms over %ums ceiling\n",
-				peer->adv_peer_id, smoothed / RIST_CLOCK, peer->config.rtt_drop);
-		} else if (act == RIST_RTT_MUTE_RESTORE) {
+				peer->adv_peer_id,
+				(peer->eight_times_rtt / 8) / RIST_CLOCK, peer->config.rtt_drop);
+		} else if (!mute && peer->rtt_muted) {
 			peer->rtt_muted = false;
 			peer->rtt_trickle_counter = 0;
-			rist_log_priv(&ctx->common, RIST_LOG_INFO,
-				"Peer %"PRIu32" restored to bond: smoothed RTT %"PRIu64"ms\n",
-				peer->adv_peer_id, smoothed / RIST_CLOCK);
+			if (peer->rtt_mute_state.muted)
+				rist_log_priv(&ctx->common, RIST_LOG_INFO,
+					"Peer %"PRIu32" kept as sole carrier (all bonded legs muted or stalled)\n",
+					peer->adv_peer_id);
+			else
+				rist_log_priv(&ctx->common, RIST_LOG_INFO,
+					"Peer %"PRIu32" restored to bond: smoothed RTT %"PRIu64"ms\n",
+					peer->adv_peer_id,
+					(peer->eight_times_rtt / 8) / RIST_CLOCK);
 		}
-	}
-
-	/* Last-healthy-leg guard: if the pass above left every eligible leg
-	 * muted, keep the lowest-RTT one in the bond rather than black out. */
-	int active = 0;
-	struct rist_peer *best = NULL;
-	uint64_t best_rtt = UINT64_MAX;
-	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
-		if (!rist_peer_rtt_mute_eligible(peer))
-			continue;
-		if (!peer->rtt_muted) {
-			active++;
-			continue;
-		}
-		uint64_t smoothed = peer->eight_times_rtt ? peer->eight_times_rtt / 8 : UINT64_MAX;
-		if (smoothed < best_rtt) {
-			best_rtt = smoothed;
-			best = peer;
-		}
-	}
-	if (active == 0 && best) {
-		best->rtt_muted = false;
-		best->rtt_trickle_counter = 0;
-		best->rtt_mute_state.muted = false;
-		best->rtt_mute_state.pending = false;
-		rist_log_priv(&ctx->common, RIST_LOG_INFO,
-			"Peer %"PRIu32" kept in bond (all bonded legs over RTT ceiling)\n",
-			best->adv_peer_id);
 	}
 }
 
@@ -4754,6 +4830,9 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 		{
 			mute_check_next_time = now + (uint64_t)250 * (uint64_t)RIST_CLOCK;
 			pthread_mutex_lock(&ctx->common.peerlist_lock);
+			/* Stall first so the mute check sees this tick's stalled
+			 * flags and can keep a carrier when a sibling is silent. */
+			rist_sender_stall_check(ctx, now);
 			rist_sender_rtt_mute_check(ctx, now);
 			pthread_mutex_unlock(&ctx->common.peerlist_lock);
 		}

@@ -90,6 +90,11 @@ static inline uint32_t rist_seq_next(uint32_t last, bool short_seq)
  * never age a packet out of the recovery buffer. */
 #define RIST_CBR_MAX_HOLD_US (1000)
 #define RIST_PING_INTERVAL (100)  /* In milliseconds, how long to space ping requests */
+/* Missed RTCP/ping intervals before a bonded leg is pulled from the rotation
+ * (fast, reversible); kept well under the liveness timeout, the real teardown. */
+#define RIST_STALL_MUTE_PINGS (3)
+/* Floor for the per-peer liveness timeout, in missed RTCP/ping intervals. */
+#define RIST_LIVENESS_MIN_PINGS (4)
 #define RIST_PBKDF2_HMAC_SHA256_ITERATIONS (1024)
 #define RIST_AES_KEY_REUSE_TIMES UINT32_MAX
 #define RIST_MAX_HOSTNAME (128)
@@ -686,6 +691,11 @@ struct rist_peer {
 	struct rist_rtt_mute_state rtt_mute_state;
 	uint32_t rtt_trickle_counter; /* 1-in-N counter for redundant trickle sends */
 	uint32_t rtt_mute_count; /* cumulative count of RTT-triggered mute events */
+
+	/* Briefly-silent bonded leg: skipped in the payload rotation but kept
+	 * authenticated, so it resumes without re-auth if it returns before the
+	 * liveness timeout (rist_sender_stall_check / rist_peer_liveness_timeout). */
+	bool stalled;
 
 	/* Missing queue max size */
 	uint32_t missing_counter_max;
