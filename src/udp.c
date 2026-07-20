@@ -351,9 +351,19 @@ int rist_send_common_rtcp(struct rist_peer *p, uint8_t payload_type, uint8_t *pa
 	}
 	else
 	{
-		// update bandwidth value
-		rist_calculate_bitrate(ret, &p->bw);
-		rist_calculate_bitrate(ts_null_bytes, &p->ts_nulls_bw);
+		/* Advanced-profile media is already bitrate-accounted in
+		 * rist_send_seq_rtcp (it builds and sends before this shared
+		 * path); counting it again here would double-count p->bw. */
+		bool adv_media_accounted = (cctx->profile == RIST_PROFILE_ADVANCED &&
+			p->remote_supports_advanced &&
+			payload_type != RIST_PAYLOAD_TYPE_DATA_OOB &&
+			payload_type != RIST_PAYLOAD_TYPE_RTCP &&
+			payload_type != RIST_PAYLOAD_TYPE_RTCP_NACK);
+		if (!adv_media_accounted) {
+			// update bandwidth value
+			rist_calculate_bitrate(ret, &p->bw);
+			rist_calculate_bitrate(ts_null_bytes, &p->ts_nulls_bw);
+		}
 	}
 
 	// TODO:

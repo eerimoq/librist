@@ -63,6 +63,13 @@ Fable 5 security audit:
     address buffer.
 
 Bug Fixes:
+  - Advanced Profile senders no longer double-count the peer bitrate. The
+    Advanced media path accounts p->bw when it builds and sends a packet,
+    and the shared send path accounted it a second time, so the measured
+    peer bitrate read about 2x the real wire rate. That inflated estimate
+    fed the recovery_maxbitrate retransmit throttle, which could refuse
+    reactive retransmits while the link was not actually saturated. The
+    shared path now skips accounting for Advanced media it did not send.
   - Advanced Profile senders now emit a spec-conformant RTP timestamp. The
     1 MHz timestamp (TR-06-3 Section 5.2.1) was built with a >> 16 shift that
     ran the clock 65536x too fast and wrapped every ~65 ms; the sender now
