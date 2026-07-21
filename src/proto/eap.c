@@ -40,6 +40,7 @@
 #define EAP_REAUTH_PERIOD 60000 // ms
 #define EAP_AUTH_FAILED_RECOVERY 30000 // ms, soft-FAILED -> UNAUTH after this quiet
 #define EAP_IDENTITY_REPLY_INTERVAL 200 // ms, rate-limit pre-auth IDENTITY replies
+#define EAP_SRP_OP_INTERVAL 200 // ms, rate-limit pre-auth SRP modexp operations
 #define EAP_REAUTH_PROBE_MAX 2000 // ms, forget a stale authenticated-side identity-request probe after this gap
 #define EAP_MAX_MODULUS_BYTES 1024 // largest RFC 5054 group (NG_8192) is 1024 bytes
 
@@ -87,6 +88,7 @@ struct eapsrp_ctx
 
     uint64_t failed_state_timestamp; /* 0 = not in soft-FAILED */
     uint64_t last_identity_reply_timestamp; /* rate-limit pre-auth IDENTITY replies */
+    uint64_t last_srp_op_timestamp; /* rate-limit pre-auth SRP modexp operations */
 
     /* Authenticatee-only bounded EAPOL START retransmit; 0 = idle. */
     uint64_t authee_start_timer;
@@ -164,6 +166,19 @@ static inline uint8_t eap_tx_version(struct eapsrp_ctx *ctx)
 	if (!ctx->eapversion3)
 		return 2;
 	return (uint8_t)EAP_VERSION_MAX;
+}
+
+/* Print a wire-supplied username safely: replace anything outside
+ * printable ASCII so CR/LF can't forge log lines. */
+static const char *eap_sanitize_log(const char *in, char *buf, size_t buflen)
+{
+	size_t i;
+	for (i = 0; i + 1 < buflen && in[i]; i++) {
+		char c = in[i];
+		buf[i] = (c >= 32 && c < 127) ? c : '?';
+	}
+	buf[i] = '\0';
+	return buf;
 }
 
 /* Both ends can run v4: we originate it, the session is v3-hashed, and the peer
@@ -247,6 +262,14 @@ void eap_reset_data(struct eapsrp_ctx *ctx)
 	ctx->tx_nonce_counter = 0;
 	ctx->rx_last_nonce = 0;
 	ctx->rx_nonce_seen = false;
+
+	/* Drop any armed unsolicited-passphrase retransmit: it caches the old
+	 * epoch's plaintext and nonce, and resending it under the new K would
+	 * reuse that nonce value once the restarted counter catches up -- the
+	 * GCM forbidden state. The app layer can re-push after re-auth. */
+	ctx->unsollicited_passphrase_response_timer = 0;
+	ctx->unsollicited_passphrase_response_times = 0;
+	ctx->unsollicited_passphrase_state = 0;
 }
 
 static int send_eapol_pkt(struct eapsrp_ctx *ctx, uint8_t eapoltype, uint8_t eapcode, uint8_t identifier, size_t payload_len, uint8_t buf[], uint8_t eap_version)
@@ -327,6 +350,14 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 	if (len < 6)
 		return EAP_LENERR;
 
+	/* Rate-limit: each challenge costs a full client-side modexp (g^a) and
+	 * the packet is forgeable pre-auth. */
+	uint64_t now = timestampNTP_u64();
+	if (ctx->last_srp_op_timestamp != 0 &&
+	    now < ctx->last_srp_op_timestamp + (uint64_t)EAP_SRP_OP_INTERVAL * RIST_CLOCK)
+		return 0;
+	ctx->last_srp_op_timestamp = now;
+
 #if HAVE_MBEDTLS
 	ctx->eapversion3 = (eap_version >= 3);
 #elif HAVE_NETTLE
@@ -392,6 +423,14 @@ static int process_eap_request_srp_challenge(struct eapsrp_ctx *ctx, uint8_t ide
 
 static int process_eap_request_srp_server_key(struct eapsrp_ctx *ctx, uint8_t identifier, size_t len, uint8_t pkt[])
 {
+	if (!ctx->client_ctx)
+	{
+		/* No SRP client state: either no CHALLENGE was processed or the
+		 * state was reset. A spoofed SERVER_KEY request must not reach
+		 * the bignum layer with a NULL ctx. */
+		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
+		return EAP_INTERNALERR;
+	}
 	if (librist_crypto_srp_client_handle_B(ctx->client_ctx, pkt, len, ctx->config.username, ctx->config.password) != 0)
 	{
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
@@ -422,6 +461,11 @@ static int process_eap_request_srp_server_validator(struct eapsrp_ctx *ctx, uint
 {
 	if (len < (4 + DIGEST_LENGTH))
 		return EAP_LENERR;
+	if (!ctx->client_ctx)
+	{
+		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
+		return EAP_INTERNALERR;
+	}
 	if (librist_crypto_srp_client_verify_m2(ctx->client_ctx, &pkt[4]) == 0)
 	{
 		if (ctx->authentication_state < EAP_AUTH_STATE_SUCCESS)
@@ -684,6 +728,14 @@ static int process_eap_response_client_key(struct eapsrp_ctx *ctx, size_t len, u
 		return EAP_INTERNALERR;
 	}
 
+	/* Rate-limit: each client key costs a full server-side modexp
+	 * (B = kv + g^b) and the packet is forgeable pre-auth. */
+	uint64_t now = timestampNTP_u64();
+	if (ctx->last_srp_op_timestamp != 0 &&
+	    now < ctx->last_srp_op_timestamp + (uint64_t)EAP_SRP_OP_INTERVAL * RIST_CLOCK)
+		return 0;
+	ctx->last_srp_op_timestamp = now;
+
 	if (librist_crypto_srp_authenticator_handle_A(ctx->auth_ctx, pkt, len) != 0) {
 		ctx->authentication_state = EAP_AUTH_STATE_FAILED;
 		ctx->tries = EAP_AUTH_TRIES_PERMANENT;
@@ -712,7 +764,8 @@ static int process_eap_response_client_validator(struct eapsrp_ctx *ctx, size_t 
 	}
 
 	if (librist_crypto_srp_authenticator_verify_m1(ctx->auth_ctx, ctx->config.username, &pkt[4]) != 0) {
-		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN, EAP_LOG_PREFIX"Authentication failed for %s@%s\n", ctx->config.username, ctx->ip_string);
+		char ubuf[256];
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN, EAP_LOG_PREFIX"Authentication failed for %s@%s\n", eap_sanitize_log(ctx->config.username, ubuf, sizeof(ubuf)), ctx->ip_string);
 		/* Advisory hint, latched: see srp-compat note in NEWS for v0.2.18. */
 		if (!ctx->srp_legacy_peer_warned) {
 			ctx->srp_legacy_peer_warned = true;
@@ -763,8 +816,10 @@ static int process_eap_response_srp_server_validator(struct eapsrp_ctx *ctx)
 {
 	if (ctx->authenticated)
 	{
-		if (ctx->authentication_state < EAP_AUTH_STATE_SUCCESS)
-			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO, EAP_LOG_PREFIX"Successfully authenticated %s@%s\n", ctx->config.username, ctx->ip_string);
+		if (ctx->authentication_state < EAP_AUTH_STATE_SUCCESS) {
+			char ubuf[256];
+			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_INFO, EAP_LOG_PREFIX"Successfully authenticated %s@%s\n", eap_sanitize_log(ctx->config.username, ubuf, sizeof(ubuf)), ctx->ip_string);
+		}
 
 		if (ctx->config.use_key_as_passphrase && ctx->eapversion3)
 			ctx->may_rollover_passphrase = true;
@@ -802,9 +857,19 @@ static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t ident
 	const uint8_t *skey = (ctx->config.role == EAP_ROLE_AUTHENTICATOR)
 		? librist_crypto_srp_authenticator_get_key(ctx->auth_ctx)
 		: librist_crypto_srp_client_get_key(ctx->client_ctx);
+	/* Dispatch on the NEGOTIATED session version, never on the per-packet
+	 * EAPOL version byte (cleartext, attacker-controlled): once v4 is
+	 * negotiated, downgraded frames (v3 CTR, no integrity) and the U-bit
+	 * derived-key install (no verification at all) are refused. */
+	bool session_v4 = eap_use_v4(ctx);
+	bool installed = false;
 	if (use_derived_key) {
-		librist_peer_update_rx_passphrase(ctx->peer, skey, SHA256_DIGEST_LENGTH, matches_request);
-	} else if (EAP_V4_GCM_AVAILABLE && eap_version >= 4) {
+		if (session_v4)
+			return 0;
+		installed = (librist_peer_update_rx_passphrase(ctx->peer, skey, SHA256_DIGEST_LENGTH, matches_request) == 0);
+	} else if (session_v4) {
+		if (eap_version < 4)
+			return 0;
 		/* v4 layout after the SRP header: [flags][nonce 12][ciphertext..][tag 16] */
 		if (len < (size_t)(1 + EAP_V4_NONCE_LEN + EAP_V4_TAG_LEN))
 			return EAP_LENERR;
@@ -836,10 +901,13 @@ static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t ident
 		if (!ctx->rx_nonce_seen || rx_nonce > ctx->rx_last_nonce) {
 			ctx->rx_last_nonce = rx_nonce;
 			ctx->rx_nonce_seen = true;
-			librist_peer_update_rx_passphrase(ctx->peer, plain, ct_len, matches_request);
-			rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
-				EAP_LOG_PREFIX"v4 passphrase verified and installed (AES-256-GCM, nonce=%" PRIu64 ")\n",
-				rx_nonce);
+			installed = (librist_peer_update_rx_passphrase(ctx->peer, plain, ct_len, matches_request) == 0);
+			if (installed)
+				rist_log_priv2(ctx->config.logging_settings, RIST_LOG_DEBUG,
+					EAP_LOG_PREFIX"v4 passphrase verified and installed (AES-256-GCM, nonce=%" PRIu64 ")\n",
+					rx_nonce);
+		} else {
+			installed = true;
 		}
 		_librist_crypto_secure_zero(key, sizeof(key));
 		_librist_crypto_secure_zero(plain, sizeof(plain));
@@ -848,11 +916,18 @@ static int process_eap_response_passphrase(struct eapsrp_ctx *ctx, uint8_t ident
 		uint8_t iv[16] = {0};
 		iv[15] = identifier;
 		_librist_crypto_aes_ctr(skey, aes_256? 256: 128, iv, &pkt[1], &pkt[1], len -1);
-		librist_peer_update_rx_passphrase(ctx->peer, &pkt[1], len-1, matches_request);
+		installed = (librist_peer_update_rx_passphrase(ctx->peer, &pkt[1], len-1, matches_request) == 0);
 	}
 	uint8_t buf[EAPOL_EAP_HDRS_OFFSET];
 	if (ctx->passphrase_request_timer)
 		ctx->passphrase_request_timer = 0;
+	if (!installed) {
+		/* The key slot refused the passphrase (e.g. oversize): answer
+		 * FAILURE, never confirm a rotation that did not happen. */
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_WARN,
+			EAP_LOG_PREFIX"passphrase install failed; answering FAILURE\n");
+		return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_FAILURE, identifier, 0, buf, eap_tx_version(ctx));
+	}
 	return send_eapol_pkt(ctx, EAPOL_TYPE_EAP, EAP_CODE_SUCCESS, identifier, 0, buf, eap_tx_version(ctx));
 }
 
@@ -878,10 +953,17 @@ static int process_eap_response(struct eapsrp_ctx *ctx, uint8_t pkt[], size_t le
 	if (len < 1)
 		return EAP_LENERR;
 	uint8_t type = pkt[0];
-	ctx->timeout_retries = 0;
-	free(ctx->last_pkt);
-	ctx->last_pkt_size = 0;
-	ctx->last_pkt = NULL;
+	/* Invalidate the retransmit cache only for a response matching the
+	 * in-flight exchange identifier; junk responses (spoofed or stale)
+	 * must not flush it, otherwise a spoofer blasting one response per
+	 * retransmit period starves the cache and stalls the handshake
+	 * indefinitely. */
+	if (identifier == ctx->last_identifier) {
+		ctx->timeout_retries = 0;
+		free(ctx->last_pkt);
+		ctx->last_pkt_size = 0;
+		ctx->last_pkt = NULL;
+	}
 	if (type == EAP_TYPE_IDENTITY) {
 		/* Only an authenticator should ever process IDENTITY RESPONSE; on the
 		 * authenticatee side ctx->config.lookup_func is NULL (set up via
@@ -1136,11 +1218,13 @@ int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 			/* START (re)drives the handshake; only an authenticatee sends it.
 			 * Always re-challenge with IDENTITY and reset the retransmit
 			 * bookkeeping so a caller recovering from a restart or rebind is
-			 * driven anew rather than ignored for a stale last_pkt. */
+			 * driven anew rather than ignored for a stale last_pkt. Do NOT
+			 * reset tries: it is the brute-force cap, and START is reachable
+			 * pre-auth, so clearing it here would hand an attacker unlimited
+			 * online password guesses (and unlimited server-side modexps). */
 			if (ctx->config.role == EAP_ROLE_AUTHENTICATOR) {
 				if (ctx->authentication_state == EAP_AUTH_STATE_SUCCESS)
 					ctx->authentication_state = EAP_AUTH_STATE_REAUTH;
-				ctx->tries = 0;
 				ctx->timeout_retries = 0;
 				ret = eap_request_identity(ctx);
 			} else {
@@ -1148,14 +1232,17 @@ int eap_process_eapol(struct eapsrp_ctx* ctx, uint8_t pkt[], size_t len)
 			}
 			break;
 		case EAPOL_TYPE_LOGOFF:
-			/* Refuse LOGOFF once authenticated; re-auth runs from eap_periodic. */
+			/* Refuse LOGOFF once authenticated; re-auth runs from eap_periodic.
+			 * A soft-FAILED ctx stays FAILED: walking it back to UNAUTH from
+			 * the wire bypasses the brute-force kill path, and clearing tries
+			 * would hand out unlimited online guesses. Recovery stays with
+			 * the quiet-period path in eap_periodic. */
 			if (ctx->authentication_state >= EAP_AUTH_STATE_SUCCESS) {
 				ret = EAP_UNEXPECTEDREQUEST;
 				break;
 			}
-			ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
-			ctx->tries = 0;
-			ctx->failed_state_timestamp = 0;
+			if (ctx->authentication_state != EAP_AUTH_STATE_FAILED)
+				ctx->authentication_state = EAP_AUTH_STATE_UNAUTH;
 			ret = 0;
 			break;
 		default:
@@ -1521,6 +1608,16 @@ bool rist_eap_may_rollover_tx(struct eapsrp_ctx *ctx) {
 
 void rist_eap_send_passphrase(struct eapsrp_ctx *ctx, const char *passphrase) {
 	pthread_mutex_lock(&ctx->eap_lock);
+	/* Sending pre-auth would derive direction keys from a crypto ctx that
+	 * does not exist yet (NULL) and install nothing meaningful; the peer
+	 * version byte can even be pre-armed by a spoofed packet. Require a
+	 * completed authentication. */
+	if (ctx->authentication_state != EAP_AUTH_STATE_SUCCESS) {
+		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR,
+			EAP_LOG_PREFIX"Passphrase push refused: not authenticated\n");
+		pthread_mutex_unlock(&ctx->eap_lock);
+		return;
+	}
 	size_t plen = strlen(passphrase);
 	if (plen > sizeof(ctx->unsollicited_passphrase)) {
 		rist_log_priv2(ctx->config.logging_settings, RIST_LOG_ERROR,

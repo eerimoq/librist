@@ -8,6 +8,7 @@
 #define RIST_CRYPTO_EAP_V4_CRYPTO_H
 
 #include "common/attributes.h"
+#include "crypto-private.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -19,13 +20,8 @@
  * All functions return 0 on success and a negative value on error / backend
  * unavailable. */
 
-/* Best-effort wipe of transient key material that a compiler will not elide. */
-static inline void _librist_crypto_secure_zero(void *p, size_t n)
-{
-	volatile unsigned char *v = (volatile unsigned char *)p;
-	while (n--)
-		*v++ = 0;
-}
+/* _librist_crypto_secure_zero (best-effort key-material wipe) is provided by
+ * crypto-private.h. */
 
 /* RFC 5869 §2.3 HKDF-Expand with SHA-256. PRK is used directly as the HMAC key
  * (K is already a uniformly random 256-bit value, so Extract is unnecessary). */

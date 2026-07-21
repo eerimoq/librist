@@ -605,6 +605,30 @@ void rist_prometheus_handle_client_stats(struct rist_prometheus_stats *ctx, cons
 	}
 }
 
+/* Escape a string for use as a Prometheus label value (OpenMetrics:
+ * backslash, double-quote and newline must be escaped). Input here is the
+ * remote peer's SDES cname -- attacker-controlled bytes that would otherwise
+ * break out of the label and forge metric lines in the scrape. Input is
+ * capped at dst_size/2 so the escaped form always fits. */
+static void prom_escape_label(char *dst, size_t dst_size, const char *src)
+{
+	size_t di = 0;
+	size_t max_in = (dst_size / 2) - 1;
+	for (size_t si = 0; src[si] && si < max_in && di + 3 < dst_size; si++) {
+		char c = src[si];
+		if (c == '\\' || c == '"') {
+			dst[di++] = '\\';
+			dst[di++] = c;
+		} else if (c == '\n') {
+			dst[di++] = '\\';
+			dst[di++] = 'n';
+		} else if (c >= 32 && c < 127) {
+			dst[di++] = c;
+		}
+	}
+	dst[di] = '\0';
+}
+
 void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx, const struct rist_stats *stats_container, uint64_t now, uint64_t sender_id) {
 
 	const struct rist_stats_sender_peer *stats = &stats_container->stats.sender_peer;
@@ -620,7 +644,7 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 		return;
 
 	if (s->tags == NULL) {
-		memcpy(s->cname, stats->cname, sizeof(s->cname)-1);
+		prom_escape_label(s->cname, sizeof(s->cname), stats->cname);
 		if (s->local_url == NULL) {
 			int res = snprintf(NULL, 0, "{%speer_id=\"%"PRIu32"\",peer_url=\"%s\",cname=\"%s\",sender_id=\"%"PRIu64"\"}",ctx->tags, s->peer_id, s->url, s->cname, sender_id);
 			if (res < 0) {

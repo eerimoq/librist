@@ -49,6 +49,48 @@ Features:
     callback.  Intended for low-bandwidth, NAT-friendly control tunnels
     where the heavy direction is forward and the reverse is light.
 
+Security audit (pre-authentication hardening):
+  - Tool and API memory-safety and hygiene. The YAML and SRP-verifier
+    parsers no longer over-read or over-write on malformed input; the
+    ipv4-mux receiver and the OOB API message handler reject short datagrams
+    (were a SIZE_MAX send and an unbounded heap read), and the OOB API
+    message is written at the correct byte offset; Prometheus label values
+    taken from a peer's SDES cname are escaped (label injection); passphrases
+    are no longer logged in clear; derived key material is wiped on every
+    path and on key destroy (via a single shared helper); plus several
+    NULL-guard, format-string, getopt-width and zero-init fixes.
+  - Receiver and Advanced-profile hardening. A zero recovery buffer is
+    rejected (was a config-time divide-by-zero SIGFPE); a failed null-packet
+    expansion delivers the packet unexpanded instead of stale scratch (and no
+    longer feeds SIZE_MAX into the ts-null bitrate stats); Main-profile NACK
+    range records are capped per record and per packet (retry-queue DoS
+    amplifier); the GRE H bit no longer rewrites a configured key size from
+    unauthenticated wire data; state-changing Advanced control messages (NACK,
+    RTT echo, flow attributes, PSK future nonce) are honored only after the
+    handshake, and the keepalive capability flip is set-only; and the Advanced
+    source-clock rate verdict is re-run each window instead of latching arrival
+    timing for the whole session.
+  - EAP/SRP pre-authentication hardening. Spoofed SERVER_KEY/VALIDATOR
+    requests no longer crash an SRP caller on a NULL client context; EAPOL
+    START/LOGOFF can no longer reset the brute-force try counter or revive a
+    failed context; the passphrase dispatcher keys off the negotiated session
+    version, so a v4 (AES-256-GCM) session refuses downgraded v3/derived-key
+    frames; the retransmit cache is invalidated only by a matching identifier;
+    a reset drops the armed passphrase retransmit to avoid GCM nonce reuse; a
+    failed passphrase install is answered with FAILURE instead of a false
+    SUCCESS; passphrase push is refused before authentication; wire usernames
+    are sanitized before logging (CR/LF injection); and SRP modexp requests
+    are rate-limited.
+  - PSK key-state hardening. The Advanced future-nonce control message
+    carried an unvalidated 16-bit key size that could drive PBKDF2 to write
+    past the derived-key stack buffer; it is now rejected at every layer. The
+    bad-decryption lockout no longer becomes a one-packet permanent key kill:
+    a fresh nonce or passphrase clears it, a valid decrypt decays the strike
+    counter, and zero-nonce packets are dropped without latching. The
+    PBKDF2-flood protection is preserved as an abuse-triggered per-key rekey
+    rate limit, so legitimate nonce churn (including a reflector's RTCP/media
+    nonce interleave) is never throttled.
+
 Fable 5 security audit:
   - URL parsing: a malformed UDP URL no longer triggers an out-of-bounds
     write while extracting the scheme prefix.  A URL beginning with '/'

@@ -170,7 +170,9 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 
 			if (strcmp( url_params[i].key, RIST_URL_PARAM_BUFFER_SIZE ) == 0) {
 				int temp = atoi( val );
-				if (temp >= 0) {
+				/* 0 is meaningless as a recovery buffer and divides by zero
+				 * in init_peer_settings (SIGFPE at peer creation). */
+				if (temp > 0) {
 					output_peer_config->recovery_length_min = temp;
 					output_peer_config->recovery_length_max = temp;
 				}
@@ -180,7 +182,7 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 					output_peer_config->recovery_length_min = temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_BUFFER_SIZE_MAX ) == 0) {
 				int temp = atoi( val );
-				if (temp >= 0)
+				if (temp > 0)
 					output_peer_config->recovery_length_max = temp;
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_MIFACE ) == 0) {
 				strncpy((void *)output_peer_config->miface, val, 128-1);
@@ -469,7 +471,10 @@ static void init_peer_settings(struct rist_peer *peer)
 			int max_jitter_ms = ctx->common.rist_max_jitter / RIST_CLOCK;
 			// Asume MTU of 1400 for now
 			uint32_t max_nacksperloop = ctx->recovery_maxbitrate_max * max_jitter_ms / (8*1400);
-			// Normalize against the total buffer size
+			// Normalize against the total buffer size; guard the divisor in
+			// case a 0 buffer ever gets past URL/API validation (SIGFPE).
+			if (peer->config.recovery_length_max == 0)
+				peer->config.recovery_length_max = 1;
 			max_nacksperloop = max_nacksperloop * 1000 / peer->config.recovery_length_max;
 			// Anything less that 2240Kbps at 5ms will round down to zero (100Mbps is 44)
 			if (max_nacksperloop == 0)
@@ -842,8 +847,15 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 			rist_log_priv(get_cctx(peer), RIST_LOG_DEBUG, "Packet %"PRIu32" too late, dropping!\n", seq);
 			pthread_mutex_lock(&(get_cctx(peer)->stats_lock));
 			f->stats_instant.dropped_late++;
-                        if (f->stats_instant.dropped_late > 5 * f->stats_instant.received)
-                            f->receiver_queue_has_items = false;
+			/* This soft reset is intentional anti-stall behavior: when a
+			 * flow re-bases (received falls back toward 0) it lets the
+			 * queue re-anchor onto the changed path instead of stalling.
+			 * A crafted late-packet burst can trip it early, but the queue
+			 * just rebuilds from the next in-window packet (no persistent
+			 * effect), so it is deliberately left without a received floor
+			 * here; the hard reset below keeps its received > 100 floor. */
+			if (f->stats_instant.dropped_late > 5 * f->stats_instant.received)
+				f->receiver_queue_has_items = false;
 			if ((f->stats_instant.dropped_late > (f->stats_instant.received * 5) && f->stats_instant.received > 100) ||
 				(f->stats_instant.dropped_late > 100 && f->stats_instant.received == 0)) {
 					rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Too many late packets received, resetting flow");
@@ -1932,16 +1944,26 @@ static void rist_sender_recv_nack(struct rist_peer *peer,
 		if (needed > payload_len)
 			return;
 		//rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Nack (RbRR), %d record(s)\n", nrecords);
+		/* Cap the per-record range and the per-packet total: a ~10 KB NACK
+		 * otherwise drives ~1.6e8 retry-queue operations from one packet.
+		 * 256 covers any honest loss burst; 4096/packet ~16 full records. */
+		size_t enqueued = 0;
 		for (i = 0; i < nrecords; i++) {
 			uint16_t missing;
 			uint16_t additional;
 			struct rist_rtp_nack_record *nr = (struct rist_rtp_nack_record *)(payload + sizeof(struct rist_rtcp_nack_range) + i * sizeof(struct rist_rtp_nack_record));
 			missing =  ntohs(nr->start);
 			additional = ntohs(nr->extra);
+			if (additional > 256)
+				additional = 256;
 			rist_retry_enqueue(peer->sender_ctx, nack_seq_msb + (uint32_t)missing, peer);
+			if (++enqueued >= 4096)
+				return;
 			//rist_log_priv(get_cctx(peer), RIST_LOG_ERROR, "Record %"PRIu32": base packet: %"PRIu32" range len: %d\n", i, nack_seq_msb + missing, additional);
 			for (j = 0; j < additional; j++) {
 				rist_retry_enqueue(peer->sender_ctx, nack_seq_msb + (uint32_t)missing + j + 1, peer);
+				if (++enqueued >= 4096)
+					return;
 			}
 		}
 	} else if (rtcp->ptype == PTYPE_NACK_BITMASK) {
@@ -3444,7 +3466,12 @@ static void rist_peer_recv(struct evsocket_ctx *evctx, int fd, short revents, vo
 			if (p->rist_gre_version)
 			{
 				int bits = (CHECK_BIT(gre->flags2, 6))? 256 : 128;
-				k->key_size = bits;
+				/* Honor the H bit only when it agrees with the configured
+				 * size (or none was configured): it is unauthenticated wire
+				 * data, and letting it rewrite key_size (e.g. a 192 config
+				 * clobbered to 128/256) desyncs every later rekey. */
+				if (k->key_size == 0 || k->key_size == (uint32_t)bits)
+					k->key_size = bits;
 			}
 			_librist_crypto_psk_decrypt(k, &recv_buf[nonce_offset], htobe32(seq), rist_gre_version,&recv_buf[payload_offset],  &recv_buf[payload_offset], (recv_bufsize - payload_offset));
 			pthread_mutex_unlock(&p->peer_lock);
@@ -3562,6 +3589,11 @@ protocol_bypass:
 			}
 			return;
 		}
+		/* A packet that decrypts to a valid RTP header proves the key is
+		 * healthy; decay the strike counter so a few garbage packets mixed
+		 * into good traffic can't accumulate into a lockout. */
+		if (k && k->bad_count)
+			k->bad_count = 0;
 	}
 
 
@@ -3845,7 +3877,9 @@ protocol_bypass:
 					// Null packet expansion (use a separate buffer and replace it when we had nulls)
 					if (CHECK_BIT(hdr_ext->flags, 7)) {
 						ts_null_bytes = expand_null_packets(data_payload, data_payload_out, &payload.size, hdr_ext->npd_bits);
-						if (ts_null_bytes)
+						if (ts_null_bytes < 0)
+							ts_null_bytes = 0; /* expansion failed; deliver unexpanded */
+						else
 							payload.data = (void *)data_payload_out;
 					}
 				}
