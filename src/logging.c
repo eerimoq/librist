@@ -275,7 +275,7 @@ int rist_logging_set(struct rist_logging_settings **logging_settings, enum rist_
 			settings->log_socket = -1;
 		}
 		char host[200];
-		uint16_t port;
+		uint16_t port = 0;
 		int local;
 		if (udpsocket_parse_url(address, host, sizeof(host), &port, &local) != 0 || local == 1) {
 			rist_log_priv3(RIST_LOG_ERROR, "Failed to parse logsocket address\n");

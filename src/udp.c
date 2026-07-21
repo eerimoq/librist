@@ -379,7 +379,7 @@ int rist_send_common_rtcp(struct rist_peer *p, uint8_t payload_type, uint8_t *pa
 int rist_set_url(struct rist_peer *peer)
 {
 	char host[512];
-	uint16_t port;
+	uint16_t port = 0;
 	int local;
 	if (!peer->url) {
 		if (peer->local_port > 0) {
@@ -490,7 +490,7 @@ void rist_create_socket(struct rist_peer *peer)
 
 	if (peer->listening) {
 		const char* host;
-		uint16_t port;
+		uint16_t port = 0;
 
 		char buffer[256];
 		if (peer->u.address.sa_family == AF_INET) {

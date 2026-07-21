@@ -1010,7 +1010,7 @@ int rist_peer_update_secret(struct rist_peer *peer, const char* password) {
 	pthread_mutex_lock(&peer->peer_lock);
 	size_t password_len = strlen(password);
 	struct rist_key *inactive_key = (peer->key_rx_odd_active) ? &peer->key_tx : &peer->key_tx_odd;
-	rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Updating passphrase to %s\n", password);
+	rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "Updating passphrase for peer #%u\n", peer->adv_peer_id);
 	_librist_crypto_psk_set_passphrase(inactive_key, (const uint8_t *)password, password_len);
 	struct rist_peer *child = peer->child;
 	while (child != NULL) {
@@ -1084,9 +1084,9 @@ int rist_stats_callback_set(struct rist_ctx *ctx, int statsinterval, int (*stats
 		return -1;
 	}
 	struct rist_common_ctx *cctx = rist_struct_get_common(ctx);
-	pthread_mutex_lock(&cctx->stats_lock);
 	if (RIST_UNLIKELY(!cctx))
 		return -1;
+	pthread_mutex_lock(&cctx->stats_lock);
 
 	if (statsinterval != 0)
 	{
@@ -1136,6 +1136,8 @@ int rist_parse_udp_address2(const char *url, struct rist_udp_config **udp_config
 	{
 		// Default options on new struct (specific for udp url)
 		struct rist_udp_config *output_udp_config = calloc(1, sizeof(struct rist_udp_config));
+		if (!output_udp_config)
+			return -1;
 		output_udp_config->version = RIST_UDP_CONFIG_VERSION;
 		output_udp_config->stream_id = 0; // Accept all on receiver, auto-generate on sender
 		ret = parse_url_udp_options(url, output_udp_config);
@@ -1206,7 +1208,8 @@ int rist_parse_address(const char *url, const struct rist_peer_config **peer_con
 
 int rist_parse_address2(const char *url, struct rist_peer_config **peer_config)
 {
-
+	if (!url)
+		return -1;
 	char * url_local = strdup(url);
 	int ret = 0;
 	if (*peer_config == NULL)

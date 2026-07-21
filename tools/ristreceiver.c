@@ -56,9 +56,9 @@ static int noflow_counter = 0;
 
 #if HAVE_PROMETHEUS_SUPPORT
 struct rist_prometheus_stats *prom_stats_ctx;
-bool prometheus_multipoint = false;
-bool prometheus_nocreated = false;
-bool prometheus_httpd = false;
+int prometheus_multipoint = 0;
+int prometheus_nocreated = 0;
+int prometheus_httpd = 0;
 bool enable_prometheus = false;
 char *prometheus_tags = NULL;
 uint16_t prometheus_port = 9100;
@@ -88,10 +88,10 @@ static struct option long_options[] = {
 #if HAVE_PROMETHEUS_SUPPORT
 { "enable-metrics",  no_argument,       NULL, 'M' },
 { "metrics-tags",    required_argument, NULL, 1 },
-{ "metrics-multipoint",no_argument,     (int*)&prometheus_multipoint, true },
-{ "metrics-nocreated",no_argument,      (int*)&prometheus_nocreated, true },
+{ "metrics-multipoint",no_argument,     &prometheus_multipoint, 1 },
+{ "metrics-nocreated",no_argument,      &prometheus_nocreated, 1 },
 #if HAVE_LIBMICROHTTPD
-{ "metrics-http",    no_argument,      (int*)&prometheus_httpd, true },
+{ "metrics-http",    no_argument,      &prometheus_httpd, 1 },
 { "metrics-port",    required_argument, NULL, 2 },
 { "metrics-ip",      required_argument, NULL, 3 },
 #endif //HAVE_LIBMICROHTTPD
@@ -265,6 +265,12 @@ static int cb_recv(void *arg, struct rist_data_block *b)
 					// for now, forward it all
 					// use output_udp_config->mux_filter
 					size_t ipheader_bytes = sizeof(struct ipheader) + sizeof(struct udpheader);
+					if (b->payload_len < ipheader_bytes) {
+						rist_log(&logging_settings, RIST_LOG_ERROR,
+							"Short ipv4-mux payload (%zu < %zu), dropping\n",
+							b->payload_len, ipheader_bytes);
+						continue;
+					}
 					payload = (uint8_t *)b->payload;
 					payload += ipheader_bytes;
 					payload_len = b->payload_len - ipheader_bytes;
@@ -346,8 +352,8 @@ static int rist_validate_tun_data(uint8_t *buffer, ssize_t buffer_len)
 		protocol = (int) ip->iph_protocol;
 		payload_len = (ssize_t)be16toh(ip->iph_len);
 		if (payload_len != buffer_len) {
-			rist_log(&logging_settings, RIST_LOG_INFO, "Malformed ipv4 packet %d != %d\n",
-				payload_len != buffer_len);
+			rist_log(&logging_settings, RIST_LOG_INFO, "Malformed ipv4 packet %zd != %zd\n",
+				payload_len, buffer_len);
 			return -1;
 		}
 	}
@@ -863,7 +869,7 @@ int main(int argc, char *argv[])
 		// Now parse the address 127.0.0.1:5000
 		char hostname[200] = {0};
 		int outputlisten;
-		uint16_t outputport;
+		uint16_t outputport = 0;
 		if (udpsocket_parse_url((void *)udp_config->address, hostname, 200, &outputport, &outputlisten) || !outputport || strlen(hostname) == 0) {
 			rist_log(&logging_settings, RIST_LOG_ERROR, "Could not parse output url %s\n", outputtoken);
 			goto next;

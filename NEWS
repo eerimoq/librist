@@ -50,6 +50,15 @@ Features:
     where the heavy direction is forward and the reverse is light.
 
 Security audit (pre-authentication hardening):
+  - Tool and API memory-safety and hygiene. The YAML and SRP-verifier
+    parsers no longer over-read or over-write on malformed input; the
+    ipv4-mux receiver and the OOB API message handler reject short datagrams
+    (were a SIZE_MAX send and an unbounded heap read), and the OOB API
+    message is written at the correct byte offset; Prometheus label values
+    taken from a peer's SDES cname are escaped (label injection); passphrases
+    are no longer logged in clear; derived key material is wiped on every
+    path and on key destroy (via a single shared helper); plus several
+    NULL-guard, format-string, getopt-width and zero-init fixes.
   - Receiver and Advanced-profile hardening. A zero recovery buffer is
     rejected (was a config-time divide-by-zero SIGFPE); a failed null-packet
     expansion delivers the packet unexpanded instead of stale scratch (and no

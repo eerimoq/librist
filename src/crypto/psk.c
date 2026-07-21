@@ -76,6 +76,11 @@ int _librist_crypto_psk_rist_key_destroy(struct rist_key *key)
 	    linux_crypto_free(&key->linux_crypto_ctx);
 #endif
     }
+	/* Wipe key material: the peer struct is freed without zeroing. */
+	_librist_crypto_secure_zero(key->password, sizeof(key->password));
+	_librist_crypto_secure_zero(key->gre_nonce, sizeof(key->gre_nonce));
+	_librist_crypto_secure_zero(key->iv, sizeof(key->iv));
+	_librist_crypto_secure_zero(key->aes_key_sched, sizeof(key->aes_key_sched));
 	return 0;
 }
 
@@ -166,10 +171,12 @@ static void _librist_crypto_aes_key(struct rist_key *key)
     aes_key_setup(aes_key, key->aes_key_sched, key->key_size);
 #endif
     key->used_times = 0;
+    _librist_crypto_secure_zero(aes_key, sizeof(aes_key));
     return;
 #if HAVE_MBEDTLS
 fail:
     mbedtls_md_free(&sha_ctx);
+    _librist_crypto_secure_zero(aes_key, sizeof(aes_key));
     /* Leave any prior key install in place but force the lockout flag so we
      * don't run AES-CTR with whatever happened to be on the stack. */
     key->bad_decryption = true;
