@@ -596,6 +596,24 @@ int rist_adv_recv_control(struct rist_peer *peer,
 
 	const uint8_t *body = ctrl_payload + 4;
 
+	/* The Advanced control channel is cleartext by design (PSK=0 on all
+	 * control sends), so every handler here is pre-auth attack surface.
+	 * Mirror the Main-profile rule (rist_sender_recv_nack): state-changing
+	 * messages are honored only from peers that completed the (SDES or
+	 * EAP) handshake. Discovery/diagnostic traffic stays pre-auth. */
+	switch (ci) {
+	case RIST_ADV_CI_NACK_BITMASK:
+	case RIST_ADV_CI_NACK_RANGE:
+	case RIST_ADV_CI_RTT_ECHO_RESP:
+	case RIST_ADV_CI_FLOW_ATTR:
+	case RIST_ADV_CI_PSK_NONCE:
+		if (!peer->authenticated)
+			return 0;
+		break;
+	default:
+		break;
+	}
+
 	switch (ci) {
 	case RIST_ADV_CI_NACK_BITMASK: {
 		if (body_len < 12)
@@ -668,9 +686,12 @@ int rist_adv_recv_control(struct rist_peer *peer,
 	case RIST_ADV_CI_KEEPALIVE: {
 		if (body_len < 10)
 			return -1;
-		/* Parse capabilities to detect I bit */
+		/* Parse capabilities to detect I bit; set-only, so a crafted
+		 * keepalive can't downgrade a peer back to Main framing
+		 * mid-session (the Main keepalive path is set-only too). */
 		uint32_t caps = (uint32_t)body[6] << 24 | body[7] << 16 | body[8] << 8 | body[9];
-		peer->remote_supports_advanced = !!(caps & RIST_ADV_KEEPALIVE_CAP_I);
+		if (caps & RIST_ADV_KEEPALIVE_CAP_I)
+			peer->remote_supports_advanced = true;
 		peer->last_pkt_received = timestampNTP_u64();
 		rist_log_priv(ctx, RIST_LOG_DEBUG,
 			"Advanced Keep-Alive: caps=0x%08x (I=%d)\n",

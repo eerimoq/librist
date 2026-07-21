@@ -16,8 +16,10 @@
  * still running that code. There is no negotiated signal for it, so over the
  * first window the receiver also checks that the rebuilt clock advances at
  * real-time rate. A conformant clock matches arrival elapsed within jitter; a
- * broken one is off by orders of magnitude, and the peer then corrects to
- * arrival timing for the rest of the session. */
+ * broken one is off by orders of magnitude, and the peer then falls back to
+ * arrival timing. The fallback is re-tried every window, not latched for the
+ * session: a sender that recovers (or an attack burst that stops) costs one
+ * window of dejitter, not the rest of the session. */
 
 #ifndef RIST_ADV_TS_H
 #define RIST_ADV_TS_H
@@ -31,15 +33,17 @@ struct rist_adv_ts_state {
 	bool use_source;     /* post-verdict: source clock kept, else arrival */
 	uint32_t last;       /* last wire 1 MHz timestamp accumulated */
 	uint64_t accum;      /* reconstructed source time, NTP ticks (1 s = 2^32) */
-	uint64_t seed_now;   /* arrival at the seed packet (window anchor) */
-	uint64_t deadline;   /* seed_now + window: when the verdict is taken */
+	uint64_t seed_now;   /* arrival at the window anchor */
+	uint64_t deadline;   /* seed_now + window: when the verdict is (re)taken */
+	uint64_t recon_anchor; /* accum at the window anchor (fallback re-verdict) */
 };
 
 /* Reconstruct the source time (NTP ticks) for one Advanced data packet.
  *   wire_ts   : the packet's 32-bit 1 MHz RTP timestamp
  *   now       : local arrival time (NTP ticks), also the fallback value
  *   window    : the source clock is used immediately; over this span its rate
- *               is verified and, if it fails, the peer corrects to arrival
+ *               is verified and, if it fails, the peer falls back to arrival
+ *               (re-verified every window thereafter)
  *   advance   : true for an in-order live packet (advances the clock);
  *               false for a retransmit (position only, no state change)
  * Returns the source time to stamp the packet with. */
@@ -58,6 +62,7 @@ rist_adv_ts_reconstruct(struct rist_adv_ts_state *st, uint32_t wire_ts,
 		st->accum = now;
 		st->seed_now = now;
 		st->deadline = now + window;
+		st->recon_anchor = st->accum;
 		return now;
 	}
 
@@ -80,8 +85,8 @@ rist_adv_ts_reconstruct(struct rist_adv_ts_state *st, uint32_t wire_ts,
 		/* Verdict: over a full window a conformant clock has advanced at
 		 * real-time rate, so reconstructed elapsed matches arrival elapsed
 		 * within jitter. A broken clock (the 65536x-fast one an older
-		 * release emitted) misses by far more; correct to arrival for the
-		 * rest of the session. */
+		 * release emitted) misses by far more; fall back to arrival and
+		 * keep re-trying the verdict every window. */
 		st->calibrating = false;
 		uint64_t src_elapsed = st->accum - st->seed_now;
 		uint64_t arr_elapsed = now - st->seed_now;
@@ -89,11 +94,35 @@ rist_adv_ts_reconstruct(struct rist_adv_ts_state *st, uint32_t wire_ts,
 				 ? src_elapsed - arr_elapsed
 				 : arr_elapsed - src_elapsed;
 		st->use_source = drift <= (arr_elapsed >> 1);
+		st->recon_anchor = st->accum;
+		st->seed_now = now;
+		st->deadline = now + window;
 		return st->use_source ? recon : now;
 	}
 
-	if (!st->use_source)
+	if (!st->use_source) {
+		/* Arrival fallback. Keep tracking the wire clock and re-run the
+		 * verdict each window; if the source clock advances at real-time
+		 * rate again, resume dejittering off it. A retransmit only
+		 * positions (stamped arrival anyway). */
+		if (!advance)
+			return now;
+		st->accum = recon;
+		st->last = wire_ts;
+		if (now >= st->deadline) {
+			uint64_t src_elapsed = st->accum - st->recon_anchor;
+			uint64_t arr_elapsed = now - st->seed_now;
+			uint64_t drift = src_elapsed > arr_elapsed
+					 ? src_elapsed - arr_elapsed
+					 : arr_elapsed - src_elapsed;
+			st->use_source = drift <= (arr_elapsed >> 1);
+			st->recon_anchor = st->accum;
+			st->seed_now = now;
+			st->deadline = now + window;
+		}
 		return now;
+	}
+
 	if (!advance)
 		return recon; /* retransmit: position only, no state change */
 

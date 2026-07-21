@@ -50,6 +50,17 @@ Features:
     where the heavy direction is forward and the reverse is light.
 
 Security audit (pre-authentication hardening):
+  - Receiver and Advanced-profile hardening. A zero recovery buffer is
+    rejected (was a config-time divide-by-zero SIGFPE); a failed null-packet
+    expansion delivers the packet unexpanded instead of stale scratch (and no
+    longer feeds SIZE_MAX into the ts-null bitrate stats); Main-profile NACK
+    range records are capped per record and per packet (retry-queue DoS
+    amplifier); the GRE H bit no longer rewrites a configured key size from
+    unauthenticated wire data; state-changing Advanced control messages (NACK,
+    RTT echo, flow attributes, PSK future nonce) are honored only after the
+    handshake, and the keepalive capability flip is set-only; and the Advanced
+    source-clock rate verdict is re-run each window instead of latching arrival
+    timing for the whole session.
   - EAP/SRP pre-authentication hardening. Spoofed SERVER_KEY/VALIDATOR
     requests no longer crash an SRP caller on a NULL client context; EAPOL
     START/LOGOFF can no longer reset the brute-force try counter or revive a
