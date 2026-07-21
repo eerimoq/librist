@@ -50,6 +50,17 @@ Features:
     where the heavy direction is forward and the reverse is light.
 
 Security audit (pre-authentication hardening):
+  - EAP/SRP pre-authentication hardening. Spoofed SERVER_KEY/VALIDATOR
+    requests no longer crash an SRP caller on a NULL client context; EAPOL
+    START/LOGOFF can no longer reset the brute-force try counter or revive a
+    failed context; the passphrase dispatcher keys off the negotiated session
+    version, so a v4 (AES-256-GCM) session refuses downgraded v3/derived-key
+    frames; the retransmit cache is invalidated only by a matching identifier;
+    a reset drops the armed passphrase retransmit to avoid GCM nonce reuse; a
+    failed passphrase install is answered with FAILURE instead of a false
+    SUCCESS; passphrase push is refused before authentication; wire usernames
+    are sanitized before logging (CR/LF injection); and SRP modexp requests
+    are rate-limited.
   - PSK key-state hardening. The Advanced future-nonce control message
     carried an unvalidated 16-bit key size that could drive PBKDF2 to write
     past the derived-key stack buffer; it is now rejected at every layer. The
