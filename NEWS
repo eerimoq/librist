@@ -49,7 +49,7 @@ Features:
     callback.  Intended for low-bandwidth, NAT-friendly control tunnels
     where the heavy direction is forward and the reverse is light.
 
-Security audit (pre-authentication hardening):
+Security audit:
   - Tool and API memory-safety and hygiene. The YAML and SRP-verifier
     parsers no longer over-read or over-write on malformed input; the
     ipv4-mux receiver and the OOB API message handler reject short datagrams
@@ -90,8 +90,6 @@ Security audit (pre-authentication hardening):
     PBKDF2-flood protection is preserved as an abuse-triggered per-key rekey
     rate limit, so legitimate nonce churn (including a reflector's RTCP/media
     nonce interleave) is never throttled.
-
-Fable 5 security audit:
   - URL parsing: a malformed UDP URL no longer triggers an out-of-bounds
     write while extracting the scheme prefix.  A URL beginning with '/'
     underflowed the copy length and NUL-padded far past the 16-byte prefix
