@@ -49,6 +49,17 @@ Features:
     callback.  Intended for low-bandwidth, NAT-friendly control tunnels
     where the heavy direction is forward and the reverse is light.
 
+Security audit (pre-authentication hardening):
+  - PSK key-state hardening. The Advanced future-nonce control message
+    carried an unvalidated 16-bit key size that could drive PBKDF2 to write
+    past the derived-key stack buffer; it is now rejected at every layer. The
+    bad-decryption lockout no longer becomes a one-packet permanent key kill:
+    a fresh nonce or passphrase clears it, a valid decrypt decays the strike
+    counter, and zero-nonce packets are dropped without latching. The
+    PBKDF2-flood protection is preserved as an abuse-triggered per-key rekey
+    rate limit, so legitimate nonce churn (including a reflector's RTCP/media
+    nonce interleave) is never throttled.
+
 Fable 5 security audit:
   - URL parsing: a malformed UDP URL no longer triggers an out-of-bounds
     write while extracting the scheme prefix.  A URL beginning with '/'

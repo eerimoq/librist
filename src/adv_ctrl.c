@@ -704,6 +704,8 @@ int rist_adv_recv_control(struct rist_peer *peer,
 		uint8_t future_nonce[4];
 		memcpy(future_nonce, body, 4);
 		uint16_t key_bits = (uint16_t)((body[4] << 8) | body[5]);
+		if (key_bits != 0 && key_bits != 128 && key_bits != 192 && key_bits != 256)
+			return -1;
 
 		bool odd = CHECK_BIT(future_nonce[0], 7);
 		struct rist_key *ak = odd ? &peer->key_rx_odd : &peer->key_rx;

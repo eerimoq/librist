@@ -51,6 +51,7 @@ struct rist_key {
     int bad_count;
 	bool odd;
     bool csprng_failed; /* set when nonce generation can't draw randomness; encrypt/decrypt short-circuit */
+    uint64_t last_rekey; /* timestampNTP_u64() of the last nonce-adoption rekey; rate-limits PBKDF2 */
 };
 
 RIST_PRIV int _librist_crypto_psk_rist_key_init(struct rist_key *key, uint32_t key_size, uint32_t rotation, const char *password, bool odd);

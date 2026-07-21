@@ -3562,6 +3562,11 @@ protocol_bypass:
 			}
 			return;
 		}
+		/* A packet that decrypts to a valid RTP header proves the key is
+		 * healthy; decay the strike counter so a few garbage packets mixed
+		 * into good traffic can't accumulate into a lockout. */
+		if (k && k->bad_count)
+			k->bad_count = 0;
 	}
 
 
