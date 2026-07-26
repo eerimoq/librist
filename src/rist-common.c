@@ -345,6 +345,17 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				}
 				output_peer_config->profile = (enum rist_profile)temp;
 				output_peer_config->profile_set = 1;
+			} else if (output_peer_config->version >= 6 &&
+			           strcmp( url_params[i].key, RIST_URL_PARAM_CBR_OUTPUT ) == 0) {
+				char *endp = NULL;
+				long temp = strtol(val, &endp, 10);
+				if (endp == val || *endp != '\0' || temp < 0 || temp > 1) {
+					ret = -1;
+					fprintf(stderr, "Invalid cbr-output '%s'; expected 0|1\n", val);
+					continue;
+				}
+				output_peer_config->cbr_output = (int)temp;
+				output_peer_config->cbr_output_set = 1;
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);
@@ -603,6 +614,10 @@ static int receiver_insert_queue_packet(struct rist_flow *f, struct rist_peer *p
 	f->receiver_queue[idx]->packet_time = packet_time;
 	f->receiver_queue[idx]->target_output_time = packet_time + f->recovery_buffer_ticks;
 	atomic_fetch_add_explicit(&f->receiver_queue_size, len, memory_order_release);
+	if (f->cbr_output) {
+		/* Counted on the way in, so the estimate measures the source. */
+		atomic_fetch_add_explicit(&f->cbr_arrived_bytes, len, memory_order_relaxed);
+	}
 
 	return 0;
 }
@@ -1166,6 +1181,27 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 					//rist_log_priv(&ctx->common, RIST_LOG_WARN, "age is %"PRIu64"/%"PRIu64" < %"PRIu64", size %zu\n",
 					//	delay_rtc / RIST_CLOCK , delay / RIST_CLOCK, recovery_buffer_ticks / RIST_CLOCK, f->receiver_queue_size);
 					break;
+				}
+				/* The buffer has cleared this packet; pacing decides whether it
+				 * is its turn in the measured cadence yet. Delay only, and it
+				 * yields below rather than hold a packet past its deadline. */
+				if (f->cbr_output) {
+					uint64_t iv = rist_pacer_interval_ns(&f->cbr_pacer,
+									rist_pacer_rate_bps(&f->cbr_rate), b->size, 0);
+					if (iv) {
+						uint64_t now_ns = timestampNTP_to_ns(now);
+						if (rist_pacer_due_ns(&f->cbr_pacer, now_ns) > now_ns) {
+							uint64_t overdue = now > b->target_output_time ?
+									(now - b->target_output_time) : 0;
+							if (overdue < ((uint64_t)RIST_CBR_MAX_HOLD_US * RIST_CLOCK) / 1000)
+								break;
+							/* Re-anchor, else every later packet lands here too. */
+							f->cbr_overdue_releases++;
+							rist_pacer_reset(&f->cbr_pacer);
+							rist_pacer_due_ns(&f->cbr_pacer, now_ns);
+						}
+						rist_pacer_advance(&f->cbr_pacer, iv);
+					}
 				}
 				if (holes > 0)
 				{
@@ -4356,6 +4392,13 @@ static PTHREAD_START_FUNC(receiver_pthread_dataout, arg)
 
 	rist_log_priv(&receiver_ctx->common, RIST_LOG_INFO, "Starting data output thread with %d ms max output jitter\n", max_output_jitter_ms);
 
+	/* Keep one source of truth for the wake ceiling. */
+	flow->cbr_pacer.max_sleep_ns = (uint64_t)max_output_jitter_ms * 1000000ULL;
+	if (flow->cbr_output)
+		rist_log_priv(&receiver_ctx->common, RIST_LOG_INFO,
+			"CBR output pacing enabled, wake interval %u us to %d ms\n",
+			flow->cbr_output_min_us, max_output_jitter_ms);
+
 	pthread_mutex_lock(&(flow->mutex));
 	uint64_t target_recovery_buffer_size = flow->recovery_buffer_ticks;
 	pthread_mutex_unlock(&(flow->mutex));
@@ -4367,7 +4410,25 @@ static PTHREAD_START_FUNC(receiver_pthread_dataout, arg)
 
 	while (true) {
 		pthread_mutex_lock(&(flow->mutex));
-		int ret = pthread_cond_timedwait_ms(&flow->condition, &flow->mutex, max_output_jitter_ms);
+		uint64_t wait_us = (uint64_t)max_output_jitter_ms * 1000;
+		if (flow->cbr_output) {
+			uint64_t now_ntp = timestampNTP_u64();
+			uint64_t arrived = atomic_load_explicit(&flow->cbr_arrived_bytes,
+								memory_order_relaxed);
+			uint64_t delta = arrived - flow->cbr_arrived_seen;
+			flow->cbr_arrived_seen = arrived;
+			/* Only on real arrivals: feeding zero would close windows during a
+			 * signal loss and average the rate away, and the estimator's outage
+			 * detection keys off the gap between calls. */
+			if (delta)
+				rist_pacer_rate_add(&flow->cbr_rate, (size_t)delta,
+						    timestampNTP_to_us(now_ntp));
+			wait_us = rist_pacer_sleep_ns(&flow->cbr_pacer,
+						      timestampNTP_to_ns(now_ntp)) / 1000;
+			if (!wait_us)
+				wait_us = 1;
+		}
+		int ret = pthread_cond_timedwait_us(&flow->condition, &flow->mutex, wait_us);
 		if (ret && ret != ETIMEDOUT)
 			rist_log_priv(&receiver_ctx->common, RIST_LOG_ERROR, "Error %d in receiver data out loop\n", ret);
 		if (atomic_load_explicit(&flow->shutdown,memory_order_acquire) > 0)
@@ -4656,6 +4717,8 @@ int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 #endif
 	ctx->evctx = evsocket_create();
 	ctx->rist_max_jitter = RIST_MAX_JITTER * RIST_CLOCK;
+	ctx->cbr_output = false;
+	ctx->cbr_output_min_us = RIST_CBR_OUTPUT_MIN_US_DEFAULT;
 	ctx->recovery_queue_max = RIST_SERVER_QUEUE_BUFFERS;
 	if (profile > RIST_PROFILE_ADVANCED) {
 		rist_log_priv3( RIST_LOG_ERROR, "Profile not supported (%d), using main profile instead\n", profile);
