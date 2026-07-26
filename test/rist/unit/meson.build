@@ -163,3 +163,14 @@ test_tun_cidr_parse = executable('test_tun_cidr_parse',
                                  include_directories : inc,
                                  link_with : librist)
 test('tun_cidr_parse', test_tun_cidr_parse, suite:['unit'])
+
+# CBR output pacing scheduler (rist_pacer): rate estimate, occupancy trim,
+# due-time schedule and slip resync. Every failure mode of this module still
+# emits packets -- at the wrong cadence or the wrong rate -- so the invariants
+# are asserted rather than inspected, including a full-sequence cross-check
+# against an independent transcription of the algorithm.
+test_rist_pacer = executable('test_rist_pacer',
+                             'rist_pacer_test.c',
+                             '../../../src/rist_pacer.c',
+                             include_directories : inc)
+test('rist_pacer', test_rist_pacer, suite:['unit'])
