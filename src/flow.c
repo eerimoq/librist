@@ -230,6 +230,17 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 	f->receiver_id = ctx->id;
 	f->stats_next_time = timestampNTP_u64();
 	f->max_output_jitter = ctx->common.rist_max_jitter;
+
+	/* Output pacing; max_output_jitter becomes the wake ceiling. The occupancy
+	 * trim stays off (target 0): target_output_time already governs latency. */
+	f->cbr_output = ctx->common.cbr_output;
+	f->cbr_output_min_us = ctx->common.cbr_output_min_us;
+	rist_pacer_rate_init(&f->cbr_rate, 0);
+	rist_pacer_init(&f->cbr_pacer, 0.0,
+	                (uint64_t)f->cbr_output_min_us * 1000,
+	                (uint64_t)(f->max_output_jitter / RIST_CLOCK) * 1000000ULL);
+	atomic_init(&f->cbr_arrived_bytes, 0);
+
 	f->dataout_fifo_queue = calloc(ctx->fifo_queue_size, sizeof(*f->dataout_fifo_queue));
 	if (!f->dataout_fifo_queue) {
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR,

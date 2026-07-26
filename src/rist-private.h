@@ -23,6 +23,7 @@
 #include "time-shim.h"
 #include "pthread-shim.h"
 #include "socket-shim.h"
+#include "rist_pacer.h"
 #include "libevsocket.h"
 #include "librist.h"
 #include "librist/transport.h"
@@ -80,6 +81,13 @@ static inline uint32_t rist_seq_next(uint32_t last, bool short_seq)
 /* nack requests are sent every time a data packet is received. */
 /* this timer will be triggered to ensure we output nacks even when there is no data coming in */
 #define RIST_MAX_JITTER (5) /* In milliseconds */
+
+/* Floor on the output loop's wake interval when CBR pacing is on, trading CPU
+ * against spacing: residual burst is ceil(floor / datagram interval). */
+#define RIST_CBR_OUTPUT_MIN_US_DEFAULT (250)
+/* Pacing gives way once a packet is this far past its release deadline, so it can
+ * never age a packet out of the recovery buffer. */
+#define RIST_CBR_MAX_HOLD_US (1000)
 #define RIST_PING_INTERVAL (100)  /* In milliseconds, how long to space ping requests */
 #define RIST_PBKDF2_HMAC_SHA256_ITERATIONS (1024)
 #define RIST_AES_KEY_REUSE_TIMES UINT32_MAX
@@ -253,6 +261,18 @@ struct rist_flow {
 	size_t receiver_queue_max;
 	bool flag_flow_buffer_start;
 
+	/* Constant-bitrate output pacing; see rist_pacer.h. cbr_arrived_bytes is
+	 * written by the receive threads and drained by the output thread: the
+	 * estimate must come from arrivals, since measuring the paced output would
+	 * make the rate an output of itself. */
+	bool cbr_output;
+	uint32_t cbr_output_min_us;
+	atomic_uint_least64_t cbr_arrived_bytes;
+	uint64_t cbr_arrived_seen;
+	struct rist_pacer_rate cbr_rate;
+	struct rist_pacer cbr_pacer;
+	uint64_t cbr_overdue_releases;   /* pacer yielded to the buffer deadline */
+
 	/* Missing incoming packets, waiting for retransmission */
 	struct rist_missing_buffer *missing;
 	struct rist_missing_buffer *missing_tail;
@@ -353,6 +373,11 @@ struct rist_common_ctx {
 
 	/* Timers */
 	int rist_max_jitter;
+	/* CBR output pacing, per context: a flow's legs share one output, so this is
+	 * not a per-peer property. */
+	bool cbr_output;
+	bool cbr_output_set;   /* a peer URL stated a value; later conflicts refused */
+	uint32_t cbr_output_min_us;
 
 	/* Recovery buffer RTT multiplier (default 7, per RIST spec) */
 	int recovery_rtt_multiplier;

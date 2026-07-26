@@ -29,4 +29,19 @@ static inline uint32_t timestampRTP_u32(int advanced, uint64_t i_ntp)
   return (uint32_t)((i_ntp * hz) >> 32);
 }
 
+/* Convert the 64-bit NTP form (1 s = 2^32) to nanoseconds or microseconds. The
+ * halves are converted separately because the 1900 epoch offset in the upper 32
+ * bits makes (i_ntp * 1000000000) >> 32 overflow a uint64. */
+static inline uint64_t timestampNTP_to_ns(uint64_t i_ntp)
+{
+  return (i_ntp >> 32) * 1000000000ULL +
+         (((i_ntp & 0xFFFFFFFFULL) * 1000000000ULL) >> 32);
+}
+
+static inline uint64_t timestampNTP_to_us(uint64_t i_ntp)
+{
+  return (i_ntp >> 32) * 1000000ULL +
+         (((i_ntp & 0xFFFFFFFFULL) * 1000000ULL) >> 32);
+}
+
 #endif /* RIST_TIME_H */
