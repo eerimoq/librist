@@ -946,6 +946,19 @@ int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, u
 	return 0;
 }
 
+/* Share this leg should take in the weighted payload rotation. Normally the
+ * configured weight, but a leg that just rejoined after an RTT mute ramps back
+ * linearly over the rejoin dwell: it drained while muted, so it measures well
+ * until it carries again, and handing back the full share at once simply
+ * refills the queue and mutes it a second later. */
+static uint32_t rist_peer_effective_weight(const struct rist_peer *peer, uint64_t now)
+{
+	/* Ramp over the rejoin dwell, which is twice the drop dwell. */
+	return rist_rtt_ramped_weight(peer->config.weight, peer->rtt_ramp_start,
+				      (uint64_t)peer->config.rtt_drop_settle * RIST_CLOCK * 2,
+				      now);
+}
+
 void rist_sender_send_data_balanced(struct rist_sender *ctx, struct rist_buffer *buffer)
 {
 	struct rist_peer *peer;
@@ -983,7 +996,7 @@ peer_select:
 			if (ctx->weight_counter <= 0) {
 				ctx->weight_counter = ctx->total_weight;
 			}
-			peer->w_count = peer->config.weight;
+			peer->w_count = rist_peer_effective_weight(peer, now);
 			continue;
 		}
 
@@ -1004,7 +1017,7 @@ peer_select:
 			if (ctx->weight_counter <= 0) {
 				ctx->weight_counter = ctx->total_weight;
 			}
-			peer->w_count = peer->config.weight;
+			peer->w_count = rist_peer_effective_weight(peer, now);
 			/* Remember the best skipped leg for the safety net below: a
 			 * muted (late but deliverable) leg beats a stalled one (return
 			 * path down); lowest RTT breaks ties. */
@@ -1087,7 +1100,7 @@ peer_select:
 		peer = ctx->common.PEERS;
 		ctx->weight_counter = ctx->total_weight;
 		for (; peer; peer = peer->next) {
-			peer->w_count = peer->config.weight;
+			peer->w_count = rist_peer_effective_weight(peer, now);
 		}
 		if (!looped && !selected_peer_by_weight && peercnt > 0)
 			goto peer_select;

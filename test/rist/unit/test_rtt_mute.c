@@ -28,6 +28,22 @@ static void expect(const char *name, enum rist_rtt_mute_action got,
 	}
 }
 
+static void check(const char *name, bool got, bool want)
+{
+	if (got != want) {
+		fprintf(stderr, "FAIL: %s -> %d (want %d)\n", name, got, want);
+		failures++;
+	}
+}
+
+static void check_weight(const char *name, uint32_t got, uint32_t want)
+{
+	if (got != want) {
+		fprintf(stderr, "FAIL: %s -> %u (want %u)\n", name, got, want);
+		failures++;
+	}
+}
+
 int main(void)
 {
 	/* A leg that never crosses the ceiling stays active. */
@@ -125,6 +141,40 @@ int main(void)
 		/* Past the longer window it finally restores. */
 		a = rist_rtt_mute_step(&st, 100, DROP, RESTORE, 1, 5, 7); /* dwell 5 == 5 */
 		expect("asymmetric_slow_restore_fires", a, RIST_RTT_MUTE_RESTORE, st.muted, false);
+	}
+
+	/* Sole-carrier handover: when every leg wants muting one must keep
+	 * carrying, and the role is sticky so the payload does not ping-pong. */
+	{
+		/* A marginally better challenger does not take the role, even
+		 * once the incumbent has served its minimum. */
+		check("handover_rejects_small_margin",
+		      rist_rtt_sole_carrier_handover(126, 85, 10, 3, 2), false);
+		/* Twice as good is enough. */
+		check("handover_accepts_clear_margin",
+		      rist_rtt_sole_carrier_handover(1162, 406, 10, 3, 2), true);
+		/* ...but not before the incumbent has held for the minimum. */
+		check("handover_holds_until_min",
+		      rist_rtt_sole_carrier_handover(1162, 406, 2, 3, 2), false);
+		/* Exactly at the margin and exactly at the minimum both count. */
+		check("handover_boundaries",
+		      rist_rtt_sole_carrier_handover(800, 400, 3, 3, 2), true);
+	}
+
+	/* Post-restore weight ramp. */
+	{
+		/* Never muted (no ramp start) or a finished ramp: full weight. */
+		check_weight("ramp_absent", rist_rtt_ramped_weight(10, 0, 100, 50), 10);
+		check_weight("ramp_complete", rist_rtt_ramped_weight(10, 0 + 1, 100, 201), 10);
+		/* Linear across the window. */
+		check_weight("ramp_quarter", rist_rtt_ramped_weight(10, 100, 100, 125), 2);
+		check_weight("ramp_half", rist_rtt_ramped_weight(10, 100, 100, 150), 5);
+		check_weight("ramp_end", rist_rtt_ramped_weight(10, 100, 100, 200), 10);
+		/* A ramping leg never drops out of the rotation entirely. */
+		check_weight("ramp_floor_is_one", rist_rtt_ramped_weight(10, 100, 100, 101), 1);
+		/* Weight 1 and duplicate legs (0) are left alone. */
+		check_weight("ramp_skips_weight_one", rist_rtt_ramped_weight(1, 100, 100, 150), 1);
+		check_weight("ramp_skips_duplicate", rist_rtt_ramped_weight(0, 100, 100, 150), 0);
 	}
 
 	if (failures == 0) {

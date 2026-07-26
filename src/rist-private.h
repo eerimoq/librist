@@ -95,6 +95,9 @@ static inline uint32_t rist_seq_next(uint32_t last, bool short_seq)
 #define RIST_STALL_MUTE_PINGS (3)
 /* Floor for the per-peer liveness timeout, in missed RTCP/ping intervals. */
 #define RIST_LIVENESS_MIN_PINGS (4)
+/* How much better a sibling must measure before it takes the sole-carrier role
+ * from the incumbent, as a divisor of the incumbent's smoothed RTT. */
+#define RIST_SOLE_CARRIER_MARGIN (2)
 #define RIST_PBKDF2_HMAC_SHA256_ITERATIONS (1024)
 #define RIST_AES_KEY_REUSE_TIMES UINT32_MAX
 #define RIST_MAX_HOSTNAME (128)
@@ -691,6 +694,15 @@ struct rist_peer {
 	struct rist_rtt_mute_state rtt_mute_state;
 	uint32_t rtt_trickle_counter; /* 1-in-N counter for redundant trickle sends */
 	uint32_t rtt_mute_count; /* cumulative count of RTT-triggered mute events */
+	/* Elected to keep carrying while every leg wants mute. Sticky: held until
+	 * the leg recovers or a sibling is clearly better, so the payload path
+	 * does not ping-pong between two equally bad legs. */
+	bool rtt_sole_carrier;
+	uint64_t rtt_sole_since;
+	/* Start of the post-restore weight ramp. A leg that was muted for high RTT
+	 * has an empty queue, so it measures well until it is loaded again;
+	 * rejoining at full share re-floods it. Zero when no ramp is in progress. */
+	uint64_t rtt_ramp_start;
 
 	/* Briefly-silent bonded leg: skipped in the payload rotation but kept
 	 * authenticated, so it resumes without re-auth if it returns before the

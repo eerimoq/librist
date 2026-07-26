@@ -78,4 +78,39 @@ rist_rtt_mute_step(struct rist_rtt_mute_state *st, uint64_t smoothed_rtt,
 	return RIST_RTT_MUTE_DROP;
 }
 
+/* Should the sole-carrier role move from the incumbent to a challenger?
+ *
+ * When every leg wants muting, one has to keep carrying. Choosing the leg with
+ * the lowest RTT each tick sounds right but ping-pongs the payload between two
+ * equally bad legs, which is worse for the stream than committing to either, so
+ * hand over only when the challenger measures margin times better and the
+ * incumbent has served at least held_min. */
+static inline bool
+rist_rtt_sole_carrier_handover(uint64_t incumbent_rtt, uint64_t challenger_rtt,
+                               uint64_t held_for, uint64_t held_min, unsigned margin)
+{
+	if (held_for < held_min)
+		return false;
+	return challenger_rtt * margin <= incumbent_rtt;
+}
+
+/* Share of the configured weight a rejoining leg should carry, ramped linearly
+ * to full over ramp ticks since it was restored.
+ *
+ * A muted leg drains, so it measures well right up until it carries traffic
+ * again; handing back the full share at once refloods the queue and mutes it
+ * moments later. Ramping lets the leg reveal congestion under a rising load.
+ * ramp_start of 0 (never muted) or an elapsed ramp both yield full weight, and
+ * a ramping leg always keeps at least 1 so it never falls out entirely. */
+static inline uint32_t
+rist_rtt_ramped_weight(uint32_t weight, uint64_t ramp_start, uint64_t ramp, uint64_t now)
+{
+	if (!ramp_start || !ramp || weight <= 1)
+		return weight;
+	if (now <= ramp_start || (now - ramp_start) >= ramp)
+		return weight;
+	uint32_t scaled = (uint32_t)((uint64_t)weight * (now - ramp_start) / ramp);
+	return scaled ? scaled : 1;
+}
+
 #endif /* RIST_RTT_MUTE_H */

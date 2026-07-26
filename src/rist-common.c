@@ -4716,11 +4716,12 @@ static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
 				   drop_settle, restore_settle, now);
 	}
 
-	/* Count natural carriers, and remember the lowest-RTT leg that wants mute
-	 * but could still carry (not stalled), to keep if none remain. */
+	/* Count natural carriers; among the legs that want mute but could still
+	 * carry (not stalled), find the incumbent sole carrier and the best
+	 * challenger. */
 	int carriers = 0;
-	struct rist_peer *keep = NULL;
-	uint64_t keep_rtt = UINT64_MAX;
+	struct rist_peer *incumbent = NULL, *best = NULL;
+	uint64_t incumbent_rtt = UINT64_MAX, best_rtt = UINT64_MAX;
 	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
 		if (!rist_peer_bonded_data_leg(peer))
 			continue;
@@ -4729,11 +4730,37 @@ static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
 			carriers++;
 		} else if (want && !peer->stalled) {
 			uint64_t smoothed = peer->eight_times_rtt ? peer->eight_times_rtt / 8 : UINT64_MAX;
-			if (smoothed < keep_rtt) { keep_rtt = smoothed; keep = peer; }
+			if (smoothed < best_rtt) { best_rtt = smoothed; best = peer; }
+			if (peer->rtt_sole_carrier) { incumbent = peer; incumbent_rtt = smoothed; }
 		}
 	}
-	if (carriers > 0)
-		keep = NULL; /* a natural carrier exists; nothing has to be kept */
+
+	/* Pick the leg to keep when nothing else can carry. Re-running this from
+	 * the instantaneous RTT every tick made the payload path ping-pong between
+	 * two equally bad legs roughly once a second, which is worse for the stream
+	 * than staying on either one, so the incumbent holds the role until it
+	 * recovers, goes stalled, or a sibling measures several times better and
+	 * the incumbent has served at least one drop dwell. */
+	struct rist_peer *keep = NULL;
+	if (carriers == 0) {
+		keep = incumbent ? incumbent : best;
+		if (incumbent && best && best != incumbent
+		    && rist_rtt_sole_carrier_handover(incumbent_rtt, best_rtt,
+				now - incumbent->rtt_sole_since,
+				(uint64_t)incumbent->config.rtt_drop_settle * RIST_CLOCK,
+				RIST_SOLE_CARRIER_MARGIN))
+			keep = best;
+	}
+	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!rist_peer_bonded_data_leg(peer))
+			continue;
+		if (peer != keep)
+			peer->rtt_sole_carrier = false;
+		else if (!peer->rtt_sole_carrier) {
+			peer->rtt_sole_carrier = true;
+			peer->rtt_sole_since = now;
+		}
+	}
 
 	/* Apply, counting/logging only genuine peer->rtt_muted transitions. */
 	for (peer = ctx->common.PEERS; peer; peer = peer->next) {
@@ -4741,15 +4768,25 @@ static void rist_sender_rtt_mute_check(struct rist_sender *ctx, uint64_t now)
 			continue;
 		bool mute = peer->rtt_mute_state.muted && peer != keep;
 		if (mute && !peer->rtt_muted) {
+			uint64_t smoothed = (peer->eight_times_rtt / 8) / RIST_CLOCK;
 			peer->rtt_muted = true;
 			peer->rtt_mute_count++;
-			rist_log_priv(&ctx->common, RIST_LOG_INFO,
-				"Peer %"PRIu32" muted: smoothed RTT %"PRIu64"ms over %ums ceiling\n",
-				peer->adv_peer_id,
-				(peer->eight_times_rtt / 8) / RIST_CLOCK, peer->config.rtt_drop);
+			/* Below the ceiling means the leg spiked earlier and is still
+			 * serving out its rejoin dwell, not that it just crossed. */
+			if (smoothed > peer->config.rtt_drop)
+				rist_log_priv(&ctx->common, RIST_LOG_INFO,
+					"Peer %"PRIu32" muted: smoothed RTT %"PRIu64"ms over %ums ceiling\n",
+					peer->adv_peer_id, smoothed, peer->config.rtt_drop);
+			else
+				rist_log_priv(&ctx->common, RIST_LOG_INFO,
+					"Peer %"PRIu32" muted: smoothed RTT %"PRIu64"ms, rejoin dwell not met\n",
+					peer->adv_peer_id, smoothed);
 		} else if (!mute && peer->rtt_muted) {
 			peer->rtt_muted = false;
 			peer->rtt_trickle_counter = 0;
+			/* Rejoin gradually: an idle leg measures well until it carries
+			 * again, so ramp its share back instead of re-flooding it. */
+			peer->rtt_ramp_start = now;
 			if (peer->rtt_mute_state.muted)
 				rist_log_priv(&ctx->common, RIST_LOG_INFO,
 					"Peer %"PRIu32" kept as sole carrier (all bonded legs muted or stalled)\n",

@@ -164,6 +164,23 @@ Bug Fixes:
     high RTT or for silence, the two are reconciled so they never pull every
     leg at once: a leg is muted only while another stays a carrier, and the
     balancer never drops data while a usable leg remains.
+  - RTT auto-mute no longer ping-pongs the stream between two failing legs.
+    When every bonded leg was over the ceiling, the leg elected to keep
+    carrying was re-picked from the instantaneous RTT on every tick, so with
+    both legs oscillating the payload path swapped about once a second --
+    worse for the stream than committing to either leg, and the visible
+    remaining glitch on bonded cellular. The role is now sticky: the elected
+    leg holds it until it recovers, goes silent, or a sibling measures several
+    times better after the incumbent has served at least one drop dwell. The
+    mute log also no longer claims the ceiling was crossed when a leg was
+    muted while serving out its rejoin dwell.
+  - A leg rejoining after an RTT mute ramps its share back up instead of
+    resuming at full weight. A muted leg carries almost nothing, so its queue
+    drains and it measures well right until it is loaded again; handing back
+    the full share at once refilled the queue and re-muted it seconds later,
+    which self-oscillated for as long as the link stayed marginal. The share
+    now rises linearly over the rejoin dwell, so the leg reveals congestion
+    under a growing load and settles at whatever it can actually carry.
   - Advanced Profile RTT echo replies now feed the smoothed RTT. The reply
     handler recorded the measurement as the peer's last RTT but never folded it
     into the 8-tap average, nor mirrored it onto the data leg where the balancer
