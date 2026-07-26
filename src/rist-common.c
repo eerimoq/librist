@@ -2489,14 +2489,7 @@ static void rist_rtcp_handle_echo_response(struct rist_peer *peer, struct rist_r
 		return;
 	uint64_t request_time = ((uint64_t)be32toh(echoreq->ntp_msw) << 32) | be32toh(echoreq->ntp_lsw);
 	uint64_t rtt = calculate_rtt_delay(request_time, timestampNTP_u64(), be32toh(echoreq->delay));
-	peer->last_rtt = rtt;
-	peer->eight_times_rtt -= peer->eight_times_rtt / 8;
-	peer->eight_times_rtt += peer->last_rtt;
-	if (peer->peer_data && peer->peer_data != peer)
-	{
-		peer->peer_data->last_rtt = peer->last_rtt;
-		peer->peer_data->eight_times_rtt = peer->eight_times_rtt;
-	}
+	rist_peer_rtt_update(peer, rtt);
 }
 
 static void rist_handle_sr_pkt(struct rist_peer *peer, struct rist_rtcp_sr_pkt *sr) {
@@ -2541,14 +2534,7 @@ static void rist_handle_rr_pkt(struct rist_peer *peer, struct rist_rtcp_rr_pkt *
 			return;
 		rtt  = now_rtc - lsr_ntp  - dlsr;
 	}
-	peer->last_rtt = rtt;
-	peer->eight_times_rtt -= peer->eight_times_rtt / 8;
-	peer->eight_times_rtt += peer->last_rtt;
-	if (peer->peer_data && peer->peer_data != peer)
-	{
-		peer->peer_data->last_rtt = peer->last_rtt;
-		peer->peer_data->eight_times_rtt = peer->eight_times_rtt;
-	}
+	rist_peer_rtt_update(peer, rtt);
 }
 
 static void rist_handle_xr_pkt(struct rist_peer *peer, uint8_t xr_pkt[], size_t pkt_len)
@@ -2601,14 +2587,7 @@ static void rist_handle_xr_pkt(struct rist_peer *peer, uint8_t xr_pkt[], size_t 
 					return;
 				rtt  = now - lrr - delay;
 			}
-			peer->last_rtt = rtt;
-			peer->eight_times_rtt -= peer->eight_times_rtt /8;
-			peer->eight_times_rtt += peer->last_rtt;
-			if (peer->peer_data && peer->peer_data != peer)
-			{
-				peer->peer_data->last_rtt = peer->last_rtt;
-				peer->peer_data->eight_times_rtt = peer->eight_times_rtt;
-			}
+			rist_peer_rtt_update(peer, rtt);
 		}
 		offset += block_length;
 		bytes_remaining -= block_length;

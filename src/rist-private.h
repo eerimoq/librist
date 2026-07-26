@@ -872,6 +872,21 @@ RIST_PRIV void sender_peer_append(struct rist_sender *ctx, struct rist_peer *pee
 /* Get common context */
 RIST_PRIV struct rist_common_ctx *get_cctx(struct rist_peer *peer);
 
+/* Fold a fresh RTT measurement into the peer's 8-tap smoothed average. RTT is
+ * measured on whichever peer object receives the response, so mirror it onto
+ * the data leg: that is where the balancer and the stats read it from. */
+static inline void rist_peer_rtt_update(struct rist_peer *peer, uint64_t rtt)
+{
+	peer->last_rtt = rtt;
+	peer->eight_times_rtt -= peer->eight_times_rtt / 8;
+	peer->eight_times_rtt += peer->last_rtt;
+	if (peer->peer_data && peer->peer_data != peer)
+	{
+		peer->peer_data->last_rtt = peer->last_rtt;
+		peer->peer_data->eight_times_rtt = peer->eight_times_rtt;
+	}
+}
+
 /*static inline in header file */
 static inline void peer_append(struct rist_peer *p)
 {

@@ -676,7 +676,8 @@ int rist_adv_recv_control(struct rist_peer *peer,
 		(void)req_ssrc;
 
 		uint64_t orig_ntp = ((uint64_t)orig_msw << 32) | orig_lsw;
-		peer->last_rtt = calculate_rtt_delay(orig_ntp, timestampNTP_u64(), proc_delay);
+		rist_peer_rtt_update(peer,
+			calculate_rtt_delay(orig_ntp, timestampNTP_u64(), proc_delay));
 		rist_log_priv(ctx, RIST_LOG_DEBUG,
 			"Advanced RTT Echo Response: RTT=%"PRIu64" us\n",
 			(peer->last_rtt * 1000000ULL) >> 32);

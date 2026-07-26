@@ -164,6 +164,15 @@ Bug Fixes:
     high RTT or for silence, the two are reconciled so they never pull every
     leg at once: a leg is muted only while another stays a carrier, and the
     balancer never drops data while a usable leg remains.
+  - Advanced Profile RTT echo replies now feed the smoothed RTT. The reply
+    handler recorded the measurement as the peer's last RTT but never folded it
+    into the 8-tap average, nor mirrored it onto the data leg where the balancer
+    and the stats read it. The value was therefore discarded, and any setup that
+    probes RTT only over the Advanced echo would leave the smoothed RTT stuck at
+    its seed -- blinding RTT auto-mute and the retransmission timers. In
+    practice the Main RTCP receiver reports still refreshed it, so this was
+    latent rather than user-visible. The smoothing rule now lives in one place
+    shared by every RTT source.
   - Advanced Profile senders now emit a spec-conformant RTP timestamp. The
     1 MHz timestamp (TR-06-3 Section 5.2.1) was built with a >> 16 shift that
     ran the clock 65536x too fast and wrapped every ~65 ms; the sender now
