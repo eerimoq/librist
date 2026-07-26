@@ -11,15 +11,18 @@ Changes for 0.2.19-rc3:
 
 Features:
   - Receiver output can now be spaced at the stream's own rate instead of
-    released in whatever batch the recovery buffer has made due. Add
-    cbr-output=1 to a receiver URL for constant-bitrate streams feeding
-    equipment that recovers a clock from arrival timing. Off by default.
+    released in whatever batch the recovery buffer has made due. Intended for
+    constant-bitrate streams feeding equipment that recovers a clock from
+    arrival timing. Off by default. Set it with
+    rist_receiver_set_cbr_output(), with ristreceiver's --cbr-output 0|1, or
+    with cbr-output=1 on a udp/rtp output URL (rist_udp_config version 2).
     Pacing never releases a packet early and never holds one past its
     deadline, so enabling it cannot cost packets. The setting applies to the
-    whole context rather than per peer, because a flow's legs share one
-    output; a peer requesting a different value is refused. Spacing is
-    coarser on Windows builds without pthreads, whose condition wait cannot
-    express sub-millisecond timeouts.
+    whole context rather than per output target, because pacing happens in the
+    flow's output loop ahead of the fan-out and all outputs share one release
+    schedule; a request for a different value is refused. Spacing is coarser
+    on Windows builds without pthreads, whose condition wait cannot express
+    sub-millisecond timeouts.
   - Advanced Profile receivers now dejitter off the sender's clock. The
     receive path reconstructs a monotonic source timeline from the 1 MHz
     RTP timestamp (TR-06-3 Section 5.2.1) and stamps packets with it instead
