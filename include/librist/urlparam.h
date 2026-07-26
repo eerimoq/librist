@@ -57,6 +57,6 @@
 #define RIST_URL_PARAM_REFLECTOR "reflector"
 #define RIST_URL_PARAM_LOCAL_PORT "local-port"
 #define RIST_URL_PARAM_RECOVERY_DEPTH "recovery-depth"  //0..16, ring = 65536<<depth packets, default 3 (Advanced profile)
-#define RIST_URL_PARAM_CBR_OUTPUT "cbr-output"  //0|1, space receiver output at the stream's measured rate (assumes CBR)
+#define RIST_URL_PARAM_CBR_OUTPUT "cbr-output"  //0|1, on a udp/rtp output url: space receiver output at the stream's measured rate (assumes CBR)
 
 #endif /* LIBRIST_URL_PARAM_H */

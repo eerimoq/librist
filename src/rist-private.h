@@ -376,7 +376,7 @@ struct rist_common_ctx {
 	/* CBR output pacing, per context: a flow's legs share one output, so this is
 	 * not a per-peer property. */
 	bool cbr_output;
-	bool cbr_output_set;   /* a peer URL stated a value; later conflicts refused */
+	bool cbr_output_set;   /* a value was stated; later conflicts refused */
 	uint32_t cbr_output_min_us;
 
 	/* Recovery buffer RTT multiplier (default 7, per RIST spec) */

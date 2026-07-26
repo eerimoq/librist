@@ -104,6 +104,14 @@ int parse_url_udp_options(const char* url, struct rist_udp_config *output_udp_co
 				int temp = atoi(val);
 				if (temp > 0 && temp <= 255)
 					output_udp_config->multicast_ttl = (uint32_t)temp;
+			} else if (output_udp_config->version >= 2 &&
+			           strcmp(url_params[i].key, RIST_URL_PARAM_CBR_OUTPUT) == 0) {
+				if (strcmp(val, "0") && strcmp(val, "1")) {
+					ret = -1;
+				} else {
+					output_udp_config->cbr_output = atoi(val);
+					output_udp_config->cbr_output_set = 1;
+				}
 			} else if (strcmp(url_params[i].key, RIST_URL_PARAM_MCAST_SOURCE) == 0) {
 				strncpy((void *)output_udp_config->multicast_source, val, RIST_MAX_STRING_LONG - 1);
 			} else if (strcmp( url_params[i].key, RIST_URL_PARAM_STREAM_ID ) == 0) {
@@ -345,17 +353,6 @@ int parse_url_options(const char* url, struct rist_peer_config *output_peer_conf
 				}
 				output_peer_config->profile = (enum rist_profile)temp;
 				output_peer_config->profile_set = 1;
-			} else if (output_peer_config->version >= 6 &&
-			           strcmp( url_params[i].key, RIST_URL_PARAM_CBR_OUTPUT ) == 0) {
-				char *endp = NULL;
-				long temp = strtol(val, &endp, 10);
-				if (endp == val || *endp != '\0' || temp < 0 || temp > 1) {
-					ret = -1;
-					fprintf(stderr, "Invalid cbr-output '%s'; expected 0|1\n", val);
-					continue;
-				}
-				output_peer_config->cbr_output = (int)temp;
-				output_peer_config->cbr_output_set = 1;
 			} else {
 				ret = -1;
 				fprintf(stderr, "Unknown or invalid parameter %s\n", url_params[i].key);

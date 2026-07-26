@@ -1,171 +1,172 @@
 /* librist. SPDX-License-Identifier: BSD-2-Clause
  *
- * ?cbr-output= parsing and its context-wide override semantics, through the
- * public rist_parse_address2 / rist_peer_create API. The setting is not
- * per-peer, so conflicting peers must be refused rather than resolved.
+ * ?cbr-output= parsing on output URLs and rist_receiver_set_cbr_output().
+ * Pacing happens in the flow's output loop ahead of the fan-out, so the setting
+ * belongs to the context: whichever route claims it first wins, and a later
+ * disagreement from either route is refused rather than resolved.
  * Intentionally avoids cmocka so it runs anywhere the public library does. */
 
 #include "librist/librist.h"
-#include "librist/peer.h"
 #include "librist/urlparam.h"
+#include "librist/receiver.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int parse_cfg(const char *url, struct rist_peer_config **cfg)
+static int expect_out_parsed(const char *url, int want_set, int want_val)
 {
-	int ret = rist_parse_address2(url, cfg);
-	if (ret != 0 || *cfg == NULL) {
-		fprintf(stderr, "parse_cfg(%s) ret=%d cfg=%p\n",
-		        url, ret, (void *)*cfg);
-		return -1;
-	}
-	return 0;
-}
-
-static int expect_parsed(const char *url, int want_set, int want_val)
-{
-	struct rist_peer_config *cfg = NULL;
-	if (parse_cfg(url, &cfg) < 0)
+	struct rist_udp_config *cfg = NULL;
+	int fails = 0;
+	if (rist_parse_udp_address2(url, &cfg) != 0 || !cfg) {
+		fprintf(stderr, "FAIL: could not parse output url %s\n", url);
+		if (cfg) rist_udp_config_free2(&cfg);
 		return 1;
-	int fails = 0;
-	if (cfg->cbr_output_set != want_set) {
-		fprintf(stderr, "FAIL: %s -> cbr_output_set=%d (want %d)\n",
-		        url, cfg->cbr_output_set, want_set);
+	}
+	if (cfg->cbr_output_set != want_set || cfg->cbr_output != want_val) {
+		fprintf(stderr, "FAIL: %s -> set=%d val=%d (want %d/%d)\n",
+		        url, cfg->cbr_output_set, cfg->cbr_output, want_set, want_val);
 		fails++;
 	}
-	if (cfg->cbr_output != want_val) {
-		fprintf(stderr, "FAIL: %s -> cbr_output=%d (want %d)\n",
-		        url, cfg->cbr_output, want_val);
-		fails++;
-	}
-	rist_peer_config_free2(&cfg);
+	rist_udp_config_free2(&cfg);
 	return fails;
 }
 
-static int expect_parse_error(const char *url)
+/* The output URL is where the parameter belongs, since it governs output. */
+static int test_output_url_parsing(void)
 {
-	struct rist_peer_config *cfg = NULL;
-	int ret = rist_parse_address2(url, &cfg);
 	int fails = 0;
-	if (ret == 0) {
-		fprintf(stderr, "FAIL: %s expected a parse error, got success\n", url);
+	fails += expect_out_parsed("udp://127.0.0.1:31100", 0, 0);
+	fails += expect_out_parsed("udp://127.0.0.1:31100?cbr-output=1", 1, 1);
+	fails += expect_out_parsed("udp://127.0.0.1:31100?cbr-output=0", 1, 0);
+
+	struct rist_udp_config *cfg = NULL;
+	if (rist_parse_udp_address2("udp://127.0.0.1:31100?cbr-output=2", &cfg) == 0) {
+		fprintf(stderr, "FAIL: output url cbr-output=2 accepted\n");
 		fails++;
 	}
-	if (cfg)
-		rist_peer_config_free2(&cfg);
-	return fails;
-}
-
-static int test_parsing(void)
-{
-	int fails = 0;
-
-	/* Absent must leave cbr_output_set 0; 0 is also a valid requested value. */
-	fails += expect_parsed("rist://@127.0.0.1:31000", 0, 0);
-	fails += expect_parsed("rist://@127.0.0.1:31000?cbr-output=1", 1, 1);
-	fails += expect_parsed("rist://@127.0.0.1:31000?cbr-output=0", 1, 0);
-
-	/* Outside 0|1 is an error, not something to round: "true" must not pass. */
-	fails += expect_parse_error("rist://@127.0.0.1:31000?cbr-output=2");
-	fails += expect_parse_error("rist://@127.0.0.1:31000?cbr-output=-1");
-	fails += expect_parse_error("rist://@127.0.0.1:31000?cbr-output=true");
-
-	/* An empty value is ignored for every parameter, so it is ignored here too. */
-	fails += expect_parsed("rist://@127.0.0.1:31000?cbr-output=", 0, 0);
+	if (cfg) rist_udp_config_free2(&cfg);
 
 	if (!fails)
-		printf("  parsing: 0|1 accepted, absent and valueless stay unset, junk rejected\n");
+		printf("  output urls: 0|1 accepted, absent stays unset, junk rejected\n");
 	return fails;
 }
 
-/* Agreeing peers are fine; the setting is context-wide. */
-static int test_matching_peers_accepted(struct rist_logging_settings *logs)
+/* What ristreceiver does with each -o url: parse it, and if it stated a value,
+ * hand that to the API. Returns the API result, or -2 if the url did not ask. */
+static int apply_out_url(struct rist_ctx *ctx, const char *url)
+{
+	struct rist_udp_config *cfg = NULL;
+	if (rist_parse_udp_address2(url, &cfg) != 0 || !cfg) {
+		fprintf(stderr, "could not parse output url %s\n", url);
+		if (cfg) rist_udp_config_free2(&cfg);
+		return -3;
+	}
+	int ret = -2;
+	if (cfg->version >= 2 && cfg->cbr_output_set)
+		ret = rist_receiver_set_cbr_output(ctx, cfg->cbr_output != 0);
+	rist_udp_config_free2(&cfg);
+	return ret;
+}
+
+/* Outputs agreeing is fine; the setting is context-wide. */
+static int test_two_agreeing_output_urls(struct rist_logging_settings *logs)
 {
 	struct rist_ctx *ctx = NULL;
 	if (rist_receiver_create(&ctx, RIST_PROFILE_MAIN, logs) != 0) {
-		fprintf(stderr, "matching: rist_receiver_create failed\n");
+		fprintf(stderr, "agreeing: rist_receiver_create failed\n");
 		return 1;
 	}
-
-	struct rist_peer_config *cfg1 = NULL, *cfg2 = NULL;
-	struct rist_peer *p1 = NULL, *p2 = NULL;
 	int fails = 0;
-
-	if (parse_cfg("rist://@127.0.0.1:31010?cbr-output=1", &cfg1) < 0) {
+	if (apply_out_url(ctx, "udp://127.0.0.1:31200?cbr-output=1") != 0 ||
+	    apply_out_url(ctx, "udp://127.0.0.1:31201?cbr-output=1") != 0) {
+		fprintf(stderr, "agreeing: two outputs asking for 1 were not accepted\n");
 		fails++;
-		goto cleanup;
+	} else {
+		printf("  two outputs both asking for cbr-output=1 accepted\n");
 	}
-	if (rist_peer_create(ctx, &p1, cfg1) != 0) {
-		fprintf(stderr, "matching: first peer (?cbr-output=1) rejected\n");
-		fails++;
-		goto cleanup;
-	}
-	if (parse_cfg("rist://@127.0.0.1:31012?cbr-output=1", &cfg2) < 0) {
-		fails++;
-		goto cleanup;
-	}
-	if (rist_peer_create(ctx, &p2, cfg2) != 0) {
-		fprintf(stderr, "matching: second peer with the same value rejected\n");
-		fails++;
-	}
-	if (!fails)
-		printf("  two legs both asking for cbr-output=1 accepted\n");
-
-cleanup:
-	if (cfg1) rist_peer_config_free2(&cfg1);
-	if (cfg2) rist_peer_config_free2(&cfg2);
 	rist_destroy(ctx);
 	return fails;
 }
 
-/* first_val then second_val on the same context: the second must be refused. */
-static int test_conflict_refused(struct rist_logging_settings *logs,
-                                 int first_val, int second_val, uint16_t port)
+/* first then second on one context: the second must be refused. */
+static int test_conflicting_output_urls(struct rist_logging_settings *logs,
+                                       int first, int second)
 {
 	struct rist_ctx *ctx = NULL;
 	if (rist_receiver_create(&ctx, RIST_PROFILE_MAIN, logs) != 0) {
 		fprintf(stderr, "conflict: rist_receiver_create failed\n");
 		return 1;
 	}
+	char u1[96], u2[96];
+	snprintf(u1, sizeof(u1), "udp://127.0.0.1:31210?cbr-output=%d", first);
+	snprintf(u2, sizeof(u2), "udp://127.0.0.1:31211?cbr-output=%d", second);
 
-	struct rist_peer_config *cfg1 = NULL, *cfg2 = NULL;
-	struct rist_peer *p1 = NULL, *p2 = NULL;
-	char url1[128], url2[128];
 	int fails = 0;
-
-	snprintf(url1, sizeof(url1), "rist://@127.0.0.1:%u?cbr-output=%d",
-	         (unsigned)port, first_val);
-	snprintf(url2, sizeof(url2), "rist://@127.0.0.1:%u?cbr-output=%d",
-	         (unsigned)(port + 2), second_val);
-
-	if (parse_cfg(url1, &cfg1) < 0) {
+	if (apply_out_url(ctx, u1) != 0) {
+		fprintf(stderr, "conflict: first output (%s) rejected\n", u1);
 		fails++;
-		goto cleanup;
-	}
-	if (rist_peer_create(ctx, &p1, cfg1) != 0) {
-		fprintf(stderr, "conflict: first peer (%s) rejected\n", url1);
-		fails++;
-		goto cleanup;
-	}
-	if (parse_cfg(url2, &cfg2) < 0) {
-		fails++;
-		goto cleanup;
-	}
-	int ret = rist_peer_create(ctx, &p2, cfg2);
-	if (ret == 0) {
-		fprintf(stderr, "conflict: %s accepted after %s; expected refusal\n",
-		        url2, url1);
+	} else if (apply_out_url(ctx, u2) == 0) {
+		fprintf(stderr, "conflict: %s accepted after %s; expected refusal\n", u2, u1);
 		fails++;
 	} else {
-		printf("  cbr-output=%d after cbr-output=%d refused (%d)\n",
-		       second_val, first_val, ret);
+		printf("  output cbr-output=%d after cbr-output=%d refused\n", second, first);
+	}
+	rist_destroy(ctx);
+	return fails;
+}
+
+/* The API is the route a run script or provisioning layer uses, and it shares
+ * the latch with the output-URL route. */
+static int test_api_and_url_share_the_latch(struct rist_logging_settings *logs)
+{
+	struct rist_ctx *ctx = NULL;
+	if (rist_receiver_create(&ctx, RIST_PROFILE_MAIN, logs) != 0) {
+		fprintf(stderr, "api: rist_receiver_create failed\n");
+		return 1;
+	}
+	int fails = 0;
+
+	if (rist_receiver_set_cbr_output(ctx, true) != 0) {
+		fprintf(stderr, "api: first call rejected\n");
+		fails++;
+	}
+	if (rist_receiver_set_cbr_output(ctx, true) != 0) {
+		fprintf(stderr, "api: agreeing repeat rejected\n");
+		fails++;
+	}
+	if (rist_receiver_set_cbr_output(ctx, false) == 0) {
+		fprintf(stderr, "api: disagreeing call accepted; expected refusal\n");
+		fails++;
 	}
 
-cleanup:
-	if (cfg1) rist_peer_config_free2(&cfg1);
-	if (cfg2) rist_peer_config_free2(&cfg2);
+	/* An output URL disagreeing with the API must lose too. */
+	if (apply_out_url(ctx, "udp://127.0.0.1:31202?cbr-output=0") == 0) {
+		fprintf(stderr, "api: output url disagreeing with the API accepted\n");
+		fails++;
+	}
+
+	if (!fails)
+		printf("  api latches, agrees with itself, and refuses a conflicting url\n");
+	rist_destroy(ctx);
+	return fails;
+}
+
+/* A sender context has no output loop to pace, so the call must not succeed. */
+static int test_api_rejects_a_sender(struct rist_logging_settings *logs)
+{
+	struct rist_ctx *ctx = NULL;
+	if (rist_sender_create(&ctx, RIST_PROFILE_MAIN, 0, logs) != 0) {
+		fprintf(stderr, "sender: rist_sender_create failed\n");
+		return 1;
+	}
+	int fails = 0;
+	if (rist_receiver_set_cbr_output(ctx, true) == 0) {
+		fprintf(stderr, "sender: accepted on a sender context\n");
+		fails++;
+	} else {
+		printf("  api refused on a sender context\n");
+	}
 	rist_destroy(ctx);
 	return fails;
 }
@@ -180,17 +181,19 @@ int main(void)
 
 	printf("?cbr-output= parsing and override semantics\n");
 	int fails = 0;
-	fails += test_parsing();
-	fails += test_matching_peers_accepted(logs);
-	fails += test_conflict_refused(logs, 1, 0, 31020);
+	fails += test_output_url_parsing();
+	fails += test_api_and_url_share_the_latch(logs);
+	fails += test_api_rejects_a_sender(logs);
+	fails += test_two_agreeing_output_urls(logs);
+	fails += test_conflicting_output_urls(logs, 1, 0);
 	/* 0 equals the default, so it must still claim the setting. */
-	fails += test_conflict_refused(logs, 0, 1, 31030);
+	fails += test_conflicting_output_urls(logs, 0, 1);
 
 	free(logs);
 	if (fails) {
 		fprintf(stderr, "%d failure(s)\n", fails);
 		return 1;
 	}
-	printf("all cbr-output URL invariants held\n");
+	printf("all cbr-output invariants held\n");
 	return 0;
 }
