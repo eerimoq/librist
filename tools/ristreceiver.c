@@ -83,6 +83,7 @@ static struct option long_options[] = {
 #endif
 { "config",          required_argument, NULL, 'c' },
 { "session-timeout-exit",  no_argument, NULL, 'x' },
+{ "cbr-output",      required_argument, NULL, 5 },
 { "help",            no_argument,       NULL, 'h' },
 { "help-url",        no_argument,       NULL, 'u' },
 #if HAVE_PROMETHEUS_SUPPORT
@@ -105,6 +106,7 @@ static struct option long_options[] = {
 const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "       -i | --inputurl  rist://...             * | Comma separated list of input rist URLs                  |\n"
 "       -o | --outputurl udp://... or rtp://... * | Comma separated list of output udp or rtp URLs           |\n"
+"          | --cbr-output 0|1                     | Space the output at the stream rate (CBR consumers)     |\n"
 "                                                 | Use tun://@ to write udp data to a tun device defined    |\n"
 "                                                 | using the -t option                                      |\n"
 "       -b | --buffer value                       | Default buffer size for packet retransmissions           |\n"
@@ -505,6 +507,7 @@ int main(int argc, char *argv[])
 	const struct rist_peer_config *peer_input_config[MAX_INPUT_COUNT];
 	char *inputurl = NULL;
 	char *outputurl = NULL;
+	int cbr_output_cli = -1;   /* -1 = not asked for; URLs may still ask */
 	char *oobtun = NULL;
 	char *shared_secret = NULL;
 	int buffer = 0;
@@ -624,6 +627,14 @@ int main(int argc, char *argv[])
 			//prometheus IP long opt
 			prometheus_httpd = true;
 			prometheus_ip = strdup(optarg);
+			break;
+		case 5:
+			if (strcmp(optarg, "0") && strcmp(optarg, "1")) {
+				rist_log(&logging_settings, RIST_LOG_ERROR,
+					"Invalid --cbr-output '%s' (expected 0 or 1)\n", optarg);
+				exit(1);
+			}
+			cbr_output_cli = atoi(optarg);
 			break;
 		case 4:
 			//prometheus unix socket long opt
@@ -889,6 +900,19 @@ int main(int argc, char *argv[])
 
 next:
 		outputtoken = strtok_r(NULL, ",", &saveptr2);
+	}
+
+	/* Output pacing, from the command line and from any output URL asking for
+	 * it. Both go through the same setter, so a disagreement between them is
+	 * refused there rather than resolved differently here. */
+	if (cbr_output_cli >= 0 && rist_receiver_set_cbr_output(ctx, cbr_output_cli != 0) != 0)
+		exit(1);
+	for (size_t i = 0; i < MAX_OUTPUT_COUNT; i++) {
+		struct rist_udp_config *uc = callback_object.udp_config[i];
+		if (!uc || uc->version < 2 || !uc->cbr_output_set)
+			continue;
+		if (rist_receiver_set_cbr_output(ctx, uc->cbr_output != 0) != 0)
+			exit(1);
 	}
 
 	if (!atleast_one_socket_opened) {
