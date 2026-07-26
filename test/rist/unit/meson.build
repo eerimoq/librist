@@ -174,3 +174,12 @@ test_rist_pacer = executable('test_rist_pacer',
                              '../../../src/rist_pacer.c',
                              include_directories : inc)
 test('rist_pacer', test_rist_pacer, suite:['unit'])
+
+# ?cbr-output= parsing plus its context-wide override semantics. The setting is
+# not per-peer -- a flow's legs share one output -- so conflicting peers must be
+# refused rather than silently resolved.
+test_url_cbr_output = executable('test_url_cbr_output',
+                                 'test_url_cbr_output.c',
+                                 include_directories : inc,
+                                 link_with : librist)
+test('url_cbr_output', test_url_cbr_output, suite:['unit'])

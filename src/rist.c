@@ -1186,6 +1186,11 @@ int rist_peer_config_defaults_set_versioned(struct rist_peer_config *peer_config
 			peer_config->recovery_priority = RIST_DEFAULT_RECOVERY_PRIORITY;
 			peer_config->recovery_depth = RIST_RECOVERY_DEPTH_DEFAULT;
 		}
+		if (version >= 6)
+		{
+			peer_config->cbr_output = 0;
+			peer_config->cbr_output_set = 0;
+		}
 		return 0;
 	}
 	else
@@ -1400,6 +1405,39 @@ static int apply_url_profile_override(struct rist_common_ctx *cctx,
 	return 0;
 }
 
+/* If config carries a ?cbr-output= request (version >= 6 && cbr_output_set),
+ * apply it to the context; a flow's legs share one output, so a peer that
+ * disagrees is refused rather than resolved. Applied after rist_start() too,
+ * since flows copy the value as they are created. Caller must hold
+ * peerlist_lock. Returns 0 on success/no-op, -1 on conflict. */
+static int apply_url_cbr_output(struct rist_common_ctx *cctx,
+                                const struct rist_peer_config *config)
+{
+	if (config->version < 6 || !config->cbr_output_set)
+		return 0;
+	bool want = config->cbr_output != 0;
+
+	if (cctx->cbr_output_set) {
+		if (want == cctx->cbr_output)
+			return 0;
+		rist_log_priv(cctx, RIST_LOG_ERROR,
+			"?cbr-output=%d in URL refused: a previous peer already set it to %d, "
+			"and a flow's peers share one output.\n",
+			config->cbr_output, cctx->cbr_output ? 1 : 0);
+		return -1;
+	}
+
+	/* Latch even on a value equal to the default, else 0 then 1 both succeed. */
+	cctx->cbr_output_set = true;
+	if (want == cctx->cbr_output)
+		return 0;
+	cctx->cbr_output = want;
+	rist_log_priv(cctx, RIST_LOG_INFO,
+		"CBR output pacing %s by ?cbr-output= URL parameter\n",
+		want ? "enabled" : "disabled");
+	return 0;
+}
+
 /* If config carries a ?recovery-depth= request (version >= 5 and not
  * DEFAULT), apply it to the context. Best-effort: ignored with a warning if
  * rist_start has run (the sender ring cannot be resized with data in flight)
@@ -1433,6 +1471,10 @@ int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct
 			pthread_mutex_unlock(&cctx->peerlist_lock);
 			return -1;
 		}
+		if (apply_url_cbr_output(cctx, config) < 0) {
+			pthread_mutex_unlock(&cctx->peerlist_lock);
+			return -1;
+		}
 		apply_url_recovery_depth(cctx, ctx, config);
 		ret = rist_receiver_peer_create(ctx->receiver_ctx, peer, config);
 	}
@@ -1443,6 +1485,10 @@ int rist_peer_create(struct rist_ctx *ctx, struct rist_peer **peer, const struct
 			pthread_mutex_unlock(&cctx->peerlist_lock);
 			return -1;
 		}
+		/* No receiver output loop on a sender; warn rather than look effective. */
+		if (config->version >= 6 && config->cbr_output_set)
+			rist_log_priv(cctx, RIST_LOG_WARN,
+				"?cbr-output= ignored on a sender: it paces receiver output.\n");
 		apply_url_recovery_depth(cctx, ctx, config);
 		ret  =rist_sender_peer_create(ctx->sender_ctx, peer, config);
 	}
