@@ -1146,15 +1146,21 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 					break;
 				}
 			}
+			/* Count the sequence gap, not the ring slots we stepped over:
+			 * the two only agree while the reader sits right behind the
+			 * data, and after an idle source or a re-anchor the walk spans
+			 * far more slots than there are missing packets. */
+			uint32_t gap = rist_seq_gap(b->seq, rist_seq_next(f->last_seq_output, f->short_seq),
+						    f->short_seq);
 			size_t max_holes = f->short_seq ? (UINT16_SIZE / 2) : (f->receiver_queue_max / 2);
-			if (holes <= max_holes) {
+			if (gap <= max_holes) {
 				pthread_mutex_lock(&ctx->common.stats_lock);
-				f->stats_instant.lost += holes;
+				f->stats_instant.lost += gap;
 				pthread_mutex_unlock(&ctx->common.stats_lock);
 			}
 			output_idx = counter;
 			rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
-					"Empty buffer element, flushing %"PRIu32" hole(s), now at index %zu, size is %zu\n",
+					"Empty buffer element, flushing %zu hole(s), now at index %zu, size is %zu\n",
 					holes, counter, atomic_load_explicit(&f->receiver_queue_size, memory_order_acquire));
 		}
 		if (b) {

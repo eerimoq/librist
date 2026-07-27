@@ -181,6 +181,16 @@ Bug Fixes:
     which self-oscillated for as long as the link stayed marginal. The share
     now rises linearly over the rejoin dwell, so the leg reveals congestion
     under a growing load and settles at whatever it can actually carry.
+  - Receiver loss statistics no longer report impossible spikes. The output
+    path counted a lost packet for every empty slot it stepped over in the
+    recovery ring, which only matches the real loss while the reader sits
+    right behind the data; after an idle source or a buffer re-anchor the
+    walk spans far more slots than there are missing packets. A clean
+    29-minute bonded run reported 40600 packets lost in a one-second window
+    whose sequence numbers showed no gap at all, and 12% cumulative loss on
+    a stream that never visibly glitched. Loss is now taken from the
+    sequence gap, the same measure the nack path already used, so the
+    reported and recovered counts agree.
   - Advanced Profile RTT echo replies now feed the smoothed RTT. The reply
     handler recorded the measurement as the peer's last RTT but never folded it
     into the 8-tap average, nor mirrored it onto the data leg where the balancer
