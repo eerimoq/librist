@@ -83,7 +83,7 @@ enum librist_merge_mode
 	LIBRIST_MERGE_MODE_AUTO  = 2,
 };
 
-#define RIST_PEER_CONFIG_VERSION (6)
+#define RIST_PEER_CONFIG_VERSION (5)
 
 /* Advanced-profile recovery depth: the base-2 exponent of the retransmission
  * ring size. The ring holds (65536 << depth) packets, i.e. 2^depth times the
@@ -214,12 +214,6 @@ struct rist_peer_config
 	 * profile and only before rist_start(). Version 5+. */
 	uint8_t recovery_depth;
 
-	/* Space receiver output at the stream's measured rate, parsed from
-	 * ?cbr-output=. Assumes a CBR stream. Version 6+. Applied context-wide, not
-	 * per peer, since a flow's legs share one output. Test cbr_output_set first:
-	 * cbr_output == 0 is indistinguishable from "not provided". */
-	int cbr_output;
-	int cbr_output_set;
 };
 
 /**
