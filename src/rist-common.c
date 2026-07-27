@@ -752,6 +752,26 @@ static int receiver_enqueue(struct rist_peer *peer, uint64_t source_time, uint64
 		return -1;
 	if (RIST_UNLIKELY(!f->receiver_queue_has_items)) {
 		/* we just received our first packet for this flow */
+		switch (rist_flow_reanchor_check(source_time, f->max_source_time,
+						 f->recovery_buffer_ticks,
+						 f->reanchor_wait_since, now_monotonic)) {
+		case RIST_REANCHOR_WAIT:
+			if (!f->reanchor_wait_since) {
+				f->reanchor_wait_since = now_monotonic;
+				rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
+						"Waiting for a current packet to anchor flow on, peer %"PRIu32" is %" PRIu64 " ms behind\n",
+						peer->adv_peer_id, (f->max_source_time - source_time) / RIST_CLOCK);
+			}
+			return -1;
+		case RIST_REANCHOR_FORCED:
+			rist_log_priv(get_cctx(peer), RIST_LOG_WARN,
+					"No current packet to anchor flow on, using seq %" PRIu32 " from peer %"PRIu32", %" PRIu64 " ms behind\n",
+					seq, peer->adv_peer_id, (f->max_source_time - source_time) / RIST_CLOCK);
+			break;
+		case RIST_REANCHOR_OK:
+			break;
+		}
+		f->reanchor_wait_since = 0;
 		pthread_mutex_lock(&f->mutex);
 		if (atomic_load_explicit(&f->receiver_queue_size, memory_order_acquire) > 0)
 		{

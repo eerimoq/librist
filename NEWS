@@ -181,6 +181,24 @@ Bug Fixes:
     which self-oscillated for as long as the link stayed marginal. The share
     now rises linearly over the rejoin dwell, so the leg reveals congestion
     under a growing load and settles at whatever it can actually carry.
+  - Receivers no longer rebuild a flow's baseline on a stale packet. When the
+    recovery buffer empties, the next packet in sets the flow's clock offset and
+    sequence baseline, and any packet would do. A bonded leg queued seconds deep
+    keeps delivering packets that old, so on a reset it could win the race and
+    rewind the baseline by its whole lag: the next packet from the healthy leg
+    then looked like a multi-second jump, which emptied the buffer again. Bonded
+    runs showed this repeat until the flow was declared dead, rewinding 12000
+    sequence numbers and 15 seconds of clock in one step. A packet further behind
+    the flow's high-water mark than the buffer is deep cannot be output anyway,
+    so it is no longer taken as a baseline while a current one may still arrive.
+    The wait is capped at one buffer window, so a flow left with nothing but a
+    lagged leg, or a source that restarted on a lower clock, still recovers.
+  - The trickle on an RTT-muted bonded leg now stops once the leg is queued
+    deeper than the receiver's buffer. Past that point nothing sent on it can
+    arrive in time to be output, and the arrivals are the stale baseline
+    candidates described above. RTCP keeps measuring the leg's RTT, and with no
+    payload queued behind them those measurements become honest, so the leg is
+    still retried; legs within the buffer window trickle as before.
   - Receiver loss statistics no longer report impossible spikes. The output
     path counted a lost packet for every empty slot it stepped over in the
     recovery ring, which only matches the real loss while the reader sits

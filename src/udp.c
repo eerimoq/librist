@@ -1004,9 +1004,14 @@ peer_select:
 		 * ?rtt-drop-trickle=N, still send a deduped duplicate every Nth packet
 		 * so RTT keeps sampling for a warm restore without stalling the buffer.
 		 * A stalled (briefly silent) leg is skipped too but never trickled: its
-		 * return path is down, so RTCP/keepalive alone probes for recovery. */
+		 * return path is down, so RTCP/keepalive alone probes for recovery.
+		 * The trickle also stops once the leg is queued deeper than the buffer,
+		 * where it can only deliver unusable packets; RTCP keeps measuring RTT,
+		 * and with nothing queued behind them those measurements get honest. */
 		if (peer->rtt_muted || peer->stalled) {
-			if (peer->rtt_muted && peer->config.rtt_drop_trickle > 0 && !looped && !peer->dead) {
+			if (peer->rtt_muted && peer->config.rtt_drop_trickle > 0 && !looped && !peer->dead
+				&& rist_rtt_trickle_useful(peer->eight_times_rtt / 8,
+							   (uint64_t)peer->config.recovery_length_max * RIST_CLOCK)) {
 				if (++peer->rtt_trickle_counter >= peer->config.rtt_drop_trickle) {
 					peer->rtt_trickle_counter = 0;
 					uint8_t *payload = buffer->data;

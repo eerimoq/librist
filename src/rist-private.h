@@ -35,6 +35,7 @@
 #include "proto/gre.h"
 #include "proto/adv.h"
 #include "rist-adv-ts.h"
+#include "rist-reanchor.h"
 #include "rist-rtt-mute.h"
 
 struct cJSON;
@@ -314,6 +315,9 @@ struct rist_flow {
 	uint64_t last_output_time;
 	uint64_t max_source_time;
 	uint64_t too_late_ctr;
+	/* When we started holding off a re-anchor for want of a current packet.
+	 * Zero while not holding off. */
+	uint64_t reanchor_wait_since;
 
 	size_t offset_recalc_sample_count;
 	uint64_t offset_recalc_samples[2048];

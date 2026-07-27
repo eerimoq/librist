@@ -157,6 +157,13 @@ test_adv_ts_reconstruct = executable('test_adv_ts_reconstruct',
                                      include_directories : inc)
 test('adv_ts_reconstruct', test_adv_ts_reconstruct, suite:['unit'])
 
+# Flow re-anchor staleness guard: a packet from a leg queued deeper than the
+# buffer must not become the flow baseline. Header-only, no link.
+test_reanchor = executable('test_reanchor',
+                           'test_reanchor.c',
+                           include_directories : inc)
+test('reanchor', test_reanchor, suite:['unit'])
+
 # RTT-based bonded-leg muting hysteresis state machine (header-only, no link).
 test_rtt_mute = executable('test_rtt_mute',
                            'test_rtt_mute.c',

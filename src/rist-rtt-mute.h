@@ -94,6 +94,22 @@ rist_rtt_sole_carrier_handover(uint64_t incumbent_rtt, uint64_t challenger_rtt,
 	return challenger_rtt * margin <= incumbent_rtt;
 }
 
+/* Is a trickle on a muted leg still worth sending?
+ *
+ * The trickle keeps a muted leg carrying a little payload so a restore starts
+ * warm. Once the leg is queued deeper than the receiver's buffer, nothing sent
+ * on it can arrive in time to be output, and the arrivals do harm: they are old
+ * enough to be the only candidate the receiver has to rebuild its baseline on
+ * after a reset, which then rewinds it. Judge by the one-way delay, half the
+ * round trip. A buffer of 0 means unknown, so keep trickling. */
+static inline bool
+rist_rtt_trickle_useful(uint64_t smoothed_rtt, uint64_t buffer)
+{
+	if (!buffer)
+		return true;
+	return (smoothed_rtt / 2) <= buffer;
+}
+
 /* Share of the configured weight a rejoining leg should carry, ramped linearly
  * to full over ramp ticks since it was restored.
  *

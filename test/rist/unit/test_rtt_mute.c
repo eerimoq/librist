@@ -177,6 +177,19 @@ int main(void)
 		check_weight("ramp_skips_duplicate", rist_rtt_ramped_weight(0, 100, 100, 150), 0);
 	}
 
+	/* Trickle cutoff on a leg queued deeper than the buffer. */
+	{
+		/* One-way delay well inside the buffer: keep the leg warm. */
+		check("trickle_within_buffer", rist_rtt_trickle_useful(400, 1800), true);
+		/* One way is half the round trip, so the cutoff is twice the buffer. */
+		check("trickle_at_cutoff", rist_rtt_trickle_useful(3600, 1800), true);
+		check("trickle_past_cutoff", rist_rtt_trickle_useful(3602, 1800), false);
+		/* The 33 s round trips seen on a collapsed leg. */
+		check("trickle_collapsed_leg", rist_rtt_trickle_useful(33000, 1800), false);
+		/* Unknown buffer: no basis to stop. */
+		check("trickle_unknown_buffer", rist_rtt_trickle_useful(33000, 0), true);
+	}
+
 	if (failures == 0) {
 		printf("OK\n");
 		return 0;
