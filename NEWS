@@ -131,6 +131,26 @@ Security audit:
     address buffer.
 
 Bug Fixes:
+  - CBR output pacing now spreads an arrival burst instead of passing most of
+    it through. Enabling it used to buy almost nothing: on a 71 Mbps feed the
+    output measured 92% of datagrams leaving back to back with pacing on,
+    against 94% with it off. The output loop releases on a deadline that every
+    packet of an arrival burst shares, so pacing has to hold the rest of the
+    burst back, and three things stopped it. The hold that keeps pacing from
+    aging a packet out of the recovery buffer was a fixed 1 ms, shorter than
+    the time a burst takes to drain at the paced cadence (twelve datagrams at
+    that rate need 1.8 ms), so packets past it re-anchored the schedule and
+    left together; it now scales with the output jitter bound. A pass with
+    nothing to send left the schedule running, banking due times in the past
+    that the next arrivals spent as one back-to-back run; such a pass now
+    re-anchors. The wake floor was a fixed 250 us against a 148 us datagram
+    interval, so a wake found two datagrams due and released the pair; it now
+    tracks half the measured interval, clamped to between 20 and 250 us, so a
+    stream slow enough that the floor already sits under its interval keeps
+    the old wake rate and the old cost. The standard deviation of the output
+    spacing goes from 608 us unpaced to 20.4 us, and back-to-back from 94% to
+    0.09%, for about two points more of a core on the receiver from the higher
+    wake rate.
   - Advanced Profile senders no longer double-count the peer bitrate. The
     Advanced media path accounts p->bw when it builds and sends a packet,
     and the shared send path accounted it a second time, so the measured
