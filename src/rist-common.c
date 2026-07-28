@@ -455,6 +455,17 @@ static void rist_warn_recovery_window(struct rist_peer *peer, size_t window, boo
 
 static void init_peer_settings(struct rist_peer *peer)
 {
+	/* 0 means unset, not unlimited: every reader below takes it as a literal
+	 * ceiling of zero. ?bandwidth=0 is ignored the same way. */
+	if (peer->config.recovery_maxbitrate == 0) {
+		rist_log_priv(get_cctx(peer), RIST_LOG_WARN,
+			"Peer #%"PRIu32": a recovery-maxbitrate of 0 disables retransmission "
+			"instead of lifting the ceiling, so using the %d kbps default. Set it "
+			"to the ceiling you want for payload plus retransmissions.\n",
+			peer->adv_peer_id, RIST_DEFAULT_RECOVERY_MAXBITRATE);
+		peer->config.recovery_maxbitrate = RIST_DEFAULT_RECOVERY_MAXBITRATE;
+	}
+
 	peer->eight_times_rtt = peer->config.recovery_rtt_min * 8;
 	/* Midpoint of the configured buffer range, and the same on both ends so the
 	 * two sides agree on how long a silent peer has to come back. The receiver

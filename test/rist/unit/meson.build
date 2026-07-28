@@ -186,6 +186,14 @@ test_bandwidth_guard = executable('test_bandwidth_guard',
                                   include_directories : inc)
 test('bandwidth_guard', test_bandwidth_guard, suite:['unit'])
 
+# recovery_maxbitrate = 0 through the C API means "unset", not "no ceiling",
+# and must be replaced with the default before a peer runs (#229).
+test_recovery_maxbitrate_zero = executable('test_recovery_maxbitrate_zero',
+                                           'test_recovery_maxbitrate_zero.c',
+                                           include_directories : inc,
+                                           link_with : librist)
+test('recovery_maxbitrate_zero', test_recovery_maxbitrate_zero, suite:['unit'])
+
 # ?rtt-drop= et al URL parsing exercised through the public API.
 test_url_rtt_drop_parse = executable('test_url_rtt_drop_parse',
                                      'test_url_rtt_drop_parse.c',
