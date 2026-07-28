@@ -86,9 +86,11 @@ static inline uint32_t rist_seq_next(uint32_t last, bool short_seq)
 /* this timer will be triggered to ensure we output nacks even when there is no data coming in */
 #define RIST_MAX_JITTER (5) /* In milliseconds */
 
-/* Floor on the output loop's wake interval when CBR pacing is on, trading CPU
- * against spacing: residual burst is ceil(floor / datagram interval). */
+/* Bounds on the output loop's wake interval when CBR pacing is on, trading CPU
+ * against spacing: residual burst is ceil(floor / datagram interval). The working
+ * floor tracks the measured interval and is clamped to these. */
 #define RIST_CBR_OUTPUT_MIN_US_DEFAULT (250)
+#define RIST_CBR_OUTPUT_MIN_US_FLOOR (20)
 /* Pacing gives way once a packet is this far past its release deadline, so it can
  * never age a packet out of the recovery buffer. A floor: the working value has to
  * cover a burst's drain time, which the output jitter ceiling bounds. */
@@ -294,6 +296,7 @@ struct rist_flow {
 	uint64_t cbr_overdue_releases;   /* pacer yielded to the buffer deadline */
 	uint32_t cbr_max_hold_us;        /* longest a paced packet may wait */
 	bool cbr_paced_hold;             /* last output pass stopped on the pacer */
+	uint64_t cbr_interval_ns;        /* last paced interval, sizes the wake floor */
 
 	/* Missing incoming packets, waiting for retransmission */
 	struct rist_missing_buffer *missing;
