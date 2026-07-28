@@ -225,6 +225,107 @@ static void test_reset_keeps_configuration(void)
 	printf("  reset re-anchors the schedule without counting an underrun\n");
 }
 
+/* A replay of the receiver's output gate over a bursty source, where the whole of
+ * a burst shares one release deadline. Modelled in the units the gate uses, so a
+ * regression shows up as a batch - the symptom that matters - rather than as a
+ * changed constant. */
+#define GATE_WAKE_NS     107000ULL          /* measured output-loop wake gap */
+#define GATE_HOLD_NS     10000000ULL        /* 2 x the 5 ms wake ceiling */
+#define GATE_BURST       12
+#define GATE_QUEUE       64                 /* undrained bursts; one is the observed depth */
+
+static void gate_replay(uint64_t hold_ns, int reanchor_when_idle,
+                        unsigned duty, unsigned *max_per_wake, double *out_bps)
+{
+	struct rist_pacer p;
+	rist_pacer_init(&p, 0.0, 250000, 5000000);
+
+	uint64_t interval = (uint64_t)DGRAM_BYTES * 8ULL * 1000000000ULL / RATE_BPS;
+	uint64_t now = 1000000000ULL;
+	uint64_t next_arrival = now;
+	unsigned released = 0, worst = 0;
+	const unsigned wakes = 200000;
+
+	/* Deadlines rather than a count, because a burst carries one between all of
+	 * it and a packet stays overdue against it across however many wakes it
+	 * waits - which is what a tight ceiling eventually trips on. */
+	uint64_t due[GATE_QUEUE];
+	unsigned left[GATE_QUEUE];
+	unsigned qh = 0, qt = 0;
+
+	for (unsigned w = 0; w < wakes; w++, now += GATE_WAKE_NS) {
+		while (next_arrival <= now) {
+			assert(qt - qh < GATE_QUEUE);
+			due[qt & (GATE_QUEUE - 1)] = next_arrival;
+			left[qt & (GATE_QUEUE - 1)] = GATE_BURST;
+			qt++;
+			next_arrival += duty * GATE_BURST * interval;
+		}
+
+		unsigned this_wake = 0;
+		int stopped_on_pacer = 0;
+		while (qh != qt) {
+			uint64_t head_due = due[qh & (GATE_QUEUE - 1)];
+			uint64_t overdue = now > head_due ? now - head_due : 0;
+			if (rist_pacer_due_ns(&p, now) > now) {
+				if (overdue < hold_ns) {
+					stopped_on_pacer = 1;
+					break;
+				}
+				rist_pacer_reset(&p);
+				rist_pacer_due_ns(&p, now);
+			}
+			rist_pacer_advance(&p, interval);
+			if (--left[qh & (GATE_QUEUE - 1)] == 0)
+				qh++;
+			this_wake++;
+			released++;
+		}
+		if (reanchor_when_idle && !stopped_on_pacer)
+			rist_pacer_reset(&p);
+
+		if (w > wakes / 10 && this_wake > worst)
+			worst = this_wake;
+	}
+
+	*max_per_wake = worst;
+	*out_bps = (double)released * DGRAM_BYTES * 8.0
+	         / ((double)wakes * GATE_WAKE_NS / 1e9);
+}
+
+static void test_burst_spreads_at_the_paced_cadence(void)
+{
+	unsigned worst;
+	double bps;
+
+	/* Both rules in force: the burst leaves one datagram at a time, and the
+	 * spreading costs nothing in throughput. */
+	gate_replay(GATE_HOLD_NS, 1, 1, &worst, &bps);
+	assert(worst == 1);
+	double err = (bps - (double)RATE_BPS) / (double)RATE_BPS;
+	if (err < 0)
+		err = -err;
+	assert(err < 0.01);
+	printf("  burst of %d spread to %u datagram per wake at %.2f Mbps\n",
+	       GATE_BURST, worst, bps / 1e6);
+
+	/* A ceiling under the drain time re-anchors mid-burst, and the rest of the
+	 * burst follows it out in the same wake. */
+	gate_replay(1000000ULL, 1, 1, &worst, &bps);
+	assert(worst > 1);
+	printf("  ceiling below the drain released %u at once\n", worst);
+
+	/* A source that pauses between bursts leaves the schedule behind the clock.
+	 * Re-anchored it still spreads; left running it spends the gap at once. */
+	gate_replay(GATE_HOLD_NS, 1, 2, &worst, &bps);
+	assert(worst == 1);
+	printf("  gapped source, re-anchored: still %u per wake\n", worst);
+
+	gate_replay(GATE_HOLD_NS, 0, 2, &worst, &bps);
+	assert(worst > 1);
+	printf("  gapped source, schedule left running: %u at once\n", worst);
+}
+
 /* A second, independent implementation of the schedule, so the whole sequence of
  * send times can be compared rather than individual calls. Deliberately not
  * factored against the module: a shared helper would defeat the purpose. */
@@ -326,6 +427,7 @@ int main(void)
 	test_slip_resyncs_without_catching_up();
 	test_sleep_clamped_both_ends();
 	test_reset_keeps_configuration();
+	test_burst_spreads_at_the_paced_cadence();
 	test_matches_reference_implementation();
 	printf("all pacer invariants held\n");
 	return 0;

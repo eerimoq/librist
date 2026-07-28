@@ -239,6 +239,7 @@ static struct rist_flow *create_flow(struct rist_receiver *ctx, uint32_t flow_id
 	rist_pacer_init(&f->cbr_pacer, 0.0,
 	                (uint64_t)f->cbr_output_min_us * 1000,
 	                (uint64_t)(f->max_output_jitter / RIST_CLOCK) * 1000000ULL);
+	f->cbr_max_hold_us = rist_cbr_hold_us((uint32_t)(f->max_output_jitter / RIST_CLOCK));
 	atomic_init(&f->cbr_arrived_bytes, 0);
 
 	f->dataout_fifo_queue = calloc(ctx->fifo_queue_size, sizeof(*f->dataout_fifo_queue));

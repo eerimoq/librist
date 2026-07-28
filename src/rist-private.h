@@ -90,8 +90,16 @@ static inline uint32_t rist_seq_next(uint32_t last, bool short_seq)
  * against spacing: residual burst is ceil(floor / datagram interval). */
 #define RIST_CBR_OUTPUT_MIN_US_DEFAULT (250)
 /* Pacing gives way once a packet is this far past its release deadline, so it can
- * never age a packet out of the recovery buffer. */
+ * never age a packet out of the recovery buffer. A floor: the working value has to
+ * cover a burst's drain time, which the output jitter ceiling bounds. */
 #define RIST_CBR_MAX_HOLD_US (1000)
+#define RIST_CBR_HOLD_JITTER_MULT (2)
+
+static inline uint32_t rist_cbr_hold_us(uint32_t max_output_jitter_ms)
+{
+	uint32_t hold = RIST_CBR_HOLD_JITTER_MULT * max_output_jitter_ms * 1000;
+	return hold > RIST_CBR_MAX_HOLD_US ? hold : RIST_CBR_MAX_HOLD_US;
+}
 #define RIST_PING_INTERVAL (100)  /* In milliseconds, how long to space ping requests */
 /* Missed RTCP/ping intervals before a bonded leg is pulled from the rotation
  * (fast, reversible); kept well under the liveness timeout, the real teardown. */
@@ -284,6 +292,8 @@ struct rist_flow {
 	struct rist_pacer_rate cbr_rate;
 	struct rist_pacer cbr_pacer;
 	uint64_t cbr_overdue_releases;   /* pacer yielded to the buffer deadline */
+	uint32_t cbr_max_hold_us;        /* longest a paced packet may wait */
+	bool cbr_paced_hold;             /* last output pass stopped on the pacer */
 
 	/* Missing incoming packets, waiting for retransmission */
 	struct rist_missing_buffer *missing;
