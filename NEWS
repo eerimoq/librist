@@ -131,6 +131,12 @@ Security audit:
     address buffer.
 
 Bug Fixes:
+  - The EAP authenticator-restart regression test compiles under MSVC again.
+    It pulled in <pthread.h> directly, which does not exist there, so the
+    whole Visual Studio solution failed to build and packagers driving a
+    full-solution build got no binaries at all. It now takes the mutex API
+    from the Windows pthread-shim, as the other tests do. Test-only; the
+    library and tools were never affected.
   - librist now builds against nettle 4.0. The AES-CTR, SRP and EAP v4 code
     used three interfaces that 4.0 removed: the unified struct aes_ctx, and
     the length argument on the sha256, hmac-sha256 and gcm digest calls. A
