@@ -985,11 +985,8 @@ peer_select:
 		if (!peer->listening && !peer->multicast_sender && !eap_is_authenticated(peer->eap_ctx))
 			continue;
 #endif
-		/* A peer is "hard dead" only after the recovery buffer grace period expires.
-		 * This prevents single-path streams from being interrupted by temporary
-		 * ECHO/RTCP response delays while still eventually stopping if the peer
-		 * is truly gone. */
-		bool hard_dead = peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now;
+		bool hard_dead = !rist_peer_may_send(peer->dead, peer->dead_since,
+						     peer->recovery_buffer_ticks, now);
 		if ((!peer->listening && !peer->authenticated) || hard_dead
 			|| (peer->listening && !peer->child_alive_count)) {
 			ctx->weight_counter -= peer->config.weight;
@@ -1055,13 +1052,14 @@ peer_select:
 						//do nothing
 					} else
 #endif
-					if (child->authenticated && child->is_data && (!child->dead || (child->dead && (child->dead_since + peer->recovery_buffer_ticks) < now))) {
+					if (child->authenticated && child->is_data && rist_peer_may_send(child->dead, child->dead_since, peer->recovery_buffer_ticks, now)) {
 						uint8_t *payload = buffer->data;
 						rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 					}
 					child = child->sibling_next;
 				}
-			} else if (!peer->dead || (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)) {
+			} else {
+				/* Eligibility already decided by hard_dead above. */
 				uint8_t *payload = buffer->data;
 				rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 			}
@@ -1087,13 +1085,14 @@ peer_select:
 						//do nothing
 					} else
 #endif
-				if (child->authenticated && child->is_data && (!child->dead || (child->dead && (child->dead_since + peer->recovery_buffer_ticks) < now))) {
+				if (child->authenticated && child->is_data && rist_peer_may_send(child->dead, child->dead_since, peer->recovery_buffer_ticks, now)) {
 					uint8_t *payload = buffer->data;
 					rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 				}
 				child = child->sibling_next;
 			}
-		} else if (!peer->dead || (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)) {
+		} else {
+			/* Eligibility already decided by hard_dead above. */
 			uint8_t *payload = buffer->data;
 			rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 		}
@@ -1160,7 +1159,7 @@ static struct rist_peer *rist_retx_healthy_egress(struct rist_sender *ctx,
 			continue;
 		if (peer->rtt_muted || peer->stalled || !peer->authenticated)
 			continue;
-		if (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)
+		if (!rist_peer_may_send(peer->dead, peer->dead_since, peer->recovery_buffer_ticks, now))
 			continue;
 		struct rist_peer *egress = peer->peer_data ? peer->peer_data : peer;
 		if (egress->remote_supports_advanced != muted->remote_supports_advanced)

@@ -456,13 +456,16 @@ static void rist_warn_recovery_window(struct rist_peer *peer, size_t window, boo
 static void init_peer_settings(struct rist_peer *peer)
 {
 	peer->eight_times_rtt = peer->config.recovery_rtt_min * 8;
+	/* Midpoint of the configured buffer range, and the same on both ends so the
+	 * two sides agree on how long a silent peer has to come back. The receiver
+	 * scales its reorder buffer from here; the sender holds a dead peer's place
+	 * in the send rotation for this long, and floors its liveness timeout on it. */
+	peer->recovery_buffer_ticks =
+		((uint64_t)(peer->config.recovery_length_max - peer->config.recovery_length_min) / 2 +
+		 peer->config.recovery_length_min) * RIST_CLOCK;
 	if (peer->receiver_mode) {
 		assert(peer->receiver_ctx != NULL);
 		uint32_t recovery_maxbitrate_mbps = peer->config.recovery_maxbitrate < 1000 ? 1 : peer->config.recovery_maxbitrate / 1000;
-		// Initial value for some variables
-		peer->recovery_buffer_ticks =
-			(peer->config.recovery_length_max - peer->config.recovery_length_min) / 2 + peer->config.recovery_length_min;
-		peer->recovery_buffer_ticks = peer->recovery_buffer_ticks * RIST_CLOCK;
 		peer->missing_counter_max =
 			(uint32_t)(peer->recovery_buffer_ticks / RIST_CLOCK) * recovery_maxbitrate_mbps /
 			(sizeof(struct rist_gre_seq) + sizeof(struct rist_rtp_hdr) + sizeof(uint32_t));

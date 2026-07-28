@@ -164,6 +164,24 @@ Bug Fixes:
     high RTT or for silence, the two are reconciled so they never pull every
     leg at once: a leg is muted only while another stays a carrier, and the
     balancer never drops data while a usable leg remains.
+  - Senders now really do hold a silent peer for one recovery buffer window
+    before dropping it, which is what the fix for #196 was meant to do. A peer
+    is declared dead when its return path goes quiet, which says nothing about
+    the forward path, so cutting a single-path stream on a late RTCP reply
+    strands a receiver that is still fine. Two defects made the grace period
+    inert. The window is the peer's recovery buffer, and that was only ever
+    computed for receive-side peers, leaving it at zero on every sender. The
+    four places that egress payload then tested it backwards, sending to a dead
+    peer only once the window had already run out -- and the gate above them had
+    already dropped the peer by then, so the window was the one interval in
+    which they stayed silent. With a 4 s buffer a single-path sender went quiet
+    3 s after the return path died; it now keeps sending for 13 s (twice the
+    buffer before the peer is declared dead, then the buffer again as grace).
+    Bonded legs are unaffected: a silent leg is pulled from the rotation by the
+    stall check long before it is ever declared dead. Populating the buffer on
+    send-side peers also makes the sender's liveness timeout match the
+    receiver's, instead of always falling back to session_timeout and tearing
+    the session down first.
   - RTT auto-mute no longer ping-pongs the stream between two failing legs.
     When every bonded leg was over the ceiling, the leg elected to keep
     carrying was re-picked from the instantaneous RTT on every tick, so with

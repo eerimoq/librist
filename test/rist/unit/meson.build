@@ -164,6 +164,14 @@ test_reanchor = executable('test_reanchor',
                            include_directories : inc)
 test('reanchor', test_reanchor, suite:['unit'])
 
+# Grace period that keeps a silent peer in the send rotation for one recovery
+# buffer window (#196), so a late RTCP reply does not cut a single-path stream
+# whose receiver is still there. Header-only, no link.
+test_send_grace = executable('test_send_grace',
+                             'test_send_grace.c',
+                             include_directories : inc)
+test('send_grace', test_send_grace, suite:['unit'])
+
 # RTT-based bonded-leg muting hysteresis state machine (header-only, no link).
 test_rtt_mute = executable('test_rtt_mute',
                            'test_rtt_mute.c',

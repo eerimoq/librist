@@ -36,6 +36,7 @@
 #include "proto/adv.h"
 #include "rist-adv-ts.h"
 #include "rist-reanchor.h"
+#include "rist-send-grace.h"
 #include "rist-rtt-mute.h"
 
 struct cJSON;
