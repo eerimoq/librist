@@ -37,6 +37,7 @@
 #include "rist-adv-ts.h"
 #include "rist-reanchor.h"
 #include "rist-send-grace.h"
+#include "rist-bandwidth-guard.h"
 #include "rist-rtt-mute.h"
 
 struct cJSON;
@@ -708,6 +709,10 @@ struct rist_peer {
 	 * has an empty queue, so it measures well until it is loaded again;
 	 * rejoining at full share re-floods it. Zero when no ramp is in progress. */
 	uint64_t rtt_ramp_start;
+
+	/* Last time this peer was warned that its payload rate leaves no
+	 * retransmission budget under its bandwidth ceiling; 0 if never. */
+	uint64_t bandwidth_warn_ts;
 
 	/* Briefly-silent bonded leg: skipped in the payload rotation but kept
 	 * authenticated, so it resumes without re-auth if it returns before the

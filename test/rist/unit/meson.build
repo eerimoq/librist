@@ -178,6 +178,14 @@ test_rtt_mute = executable('test_rtt_mute',
                            include_directories : inc)
 test('rtt_mute', test_rtt_mute, suite:['unit'])
 
+# Retransmission-budget guard: ?bandwidth= caps payload plus retransmissions
+# together, so a ceiling at or under the payload rate refuses every NACK while
+# only logging it at debug level. Header-only, no link.
+test_bandwidth_guard = executable('test_bandwidth_guard',
+                                  'test_bandwidth_guard.c',
+                                  include_directories : inc)
+test('bandwidth_guard', test_bandwidth_guard, suite:['unit'])
+
 # ?rtt-drop= et al URL parsing exercised through the public API.
 test_url_rtt_drop_parse = executable('test_url_rtt_drop_parse',
                                      'test_url_rtt_drop_parse.c',

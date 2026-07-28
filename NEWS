@@ -199,6 +199,15 @@ Bug Fixes:
     which self-oscillated for as long as the link stayed marginal. The share
     now rises linearly over the rejoin dwell, so the leg reveals congestion
     under a growing load and settles at whatever it can actually carry.
+  - Senders now report a bandwidth ceiling that leaves no room for
+    retransmissions. ?bandwidth= (recovery_maxbitrate) caps payload and
+    retransmissions together rather than payload alone, so a ceiling at or
+    below the payload rate refuses every NACK for the life of the stream.
+    The refusal was logged at debug level only, so what an operator saw was
+    a link that never recovered a packet, which reads as a network fault
+    rather than a configuration one. A warning now repeats every 30 seconds
+    while the condition holds, giving the payload rate, the ceiling and the
+    number of refusals in the interval.
   - Receivers no longer rebuild a flow's baseline on a stale packet. When the
     recovery buffer empties, the next packet in sets the flow's clock offset and
     sequence baseline, and any packet would do. A bonded leg queued seconds deep

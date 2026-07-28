@@ -17,6 +17,9 @@
 /* Bump on any incompatible shape change to the stats JSON payloads. */
 #define RIST_STATS_JSON_SCHEMA_VERSION 5
 
+/* How often to repeat the no-retransmission-budget warning. */
+#define RIST_BANDWIDTH_WARN_INTERVAL (30000ULL * RIST_CLOCK)
+
 static double round_two_digits(double number)
 {
 	long new_number = (long)(number * 100);
@@ -116,6 +119,24 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	double avg_rtt = ((double)peer->eight_times_rtt / 8);
 
 	struct rist_common_ctx *cctx = get_cctx(peer);
+
+	if (peer->is_data
+	    && rist_retransmit_budget_starved(bitrate,
+					      (size_t)peer->config.recovery_maxbitrate * 1000)) {
+		uint64_t now = timestampNTP_u64();
+		if (rist_bandwidth_warn_due(peer->bandwidth_warn_ts,
+					    RIST_BANDWIDTH_WARN_INTERVAL, now)) {
+			peer->bandwidth_warn_ts = now;
+			rist_log_priv(cctx, RIST_LOG_WARN,
+				"Peer #%"PRIu32": no retransmission budget. Payload alone is %zu kbps "
+				"against a %u kbps bandwidth ceiling, and that ceiling covers payload "
+				"plus retransmissions, so every NACK is refused (%"PRIu32" this interval) "
+				"and lost packets are never recovered. Raise ?bandwidth= above the "
+				"payload rate, leaving headroom for recovery.\n",
+				peer->adv_peer_id, bitrate / 1000, peer->config.recovery_maxbitrate,
+				peer->stats_sender_instant.bandwidth_skip);
+		}
+	}
 
 	cJSON *peer_obj = cJSON_CreateObject();
 	cJSON_AddNumberToObject(peer_obj, "flow_id", peer->adv_flow_id);
