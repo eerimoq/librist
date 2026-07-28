@@ -121,6 +121,7 @@ void librist_crypto_srp_mbedtls_hash_init(HASH_CONTEXT *ctx, bool correct_init) 
 #elif HAVE_NETTLE
 #include <nettle/sha2.h>
 #include <nettle/bignum.h>
+#include <nettle/version.h>
 #define BIGNUM MP_INT
 #define BIGNUM_INIT(num) mpz_init(num)
 #define BIGNUM_FREE(num) mpz_clear(num)
@@ -198,7 +199,12 @@ static int librist_crypto_srp_hash_final(HASH_CONTEXT *hash_ctx, uint8_t *data)
 #if HAVE_MBEDTLS
 	return mbedtls_sha256_finish_ret( hash_ctx, data);
 #else
+	/* nettle 4.0 dropped the length argument; this digest is never truncated. */
+#if NETTLE_VERSION_MAJOR >= 4
+	nettle_sha256_digest( hash_ctx, data);
+#else
 	nettle_sha256_digest( hash_ctx, SHA256_DIGEST_LENGTH, data);
+#endif
 	return 0;
 #endif
 }

@@ -152,15 +152,15 @@ static void _librist_crypto_aes_key(struct rist_key *key)
 #elif HAVE_NETTLE
 	switch(key->key_size) {
 	case 256:
-        nettle_aes256_set_encrypt_key(&key->nettle_ctx.u.ctx256, aes_key);
+        nettle_aes256_set_encrypt_key(&key->nettle_ctx.ctx256, aes_key);
         break;
 	case 192:
-        nettle_aes192_set_encrypt_key(&key->nettle_ctx.u.ctx192, aes_key);
+        nettle_aes192_set_encrypt_key(&key->nettle_ctx.ctx192, aes_key);
         break;
 	case 128:
 		RIST_FALLTHROUGH;
 	default:
-		nettle_aes128_set_encrypt_key(&key->nettle_ctx.u.ctx128, aes_key);
+		nettle_aes128_set_encrypt_key(&key->nettle_ctx.ctx128, aes_key);
     }
 #elif defined(LINUX_CRYPTO)
     if (key->linux_crypto_ctx)
@@ -195,26 +195,26 @@ void _librist_crypto_aes_ctr(const uint8_t key[], int key_size, uint8_t iv[], co
 	mbedtls_aes_crypt_ctr(&ctx, payload_len, &nc_off, iv, stream_block, inbuf, outbuf);
 	mbedtls_aes_free(&ctx);
 #elif HAVE_NETTLE
-    struct aes_ctx aes_ctx;
+    union rist_nettle_aes_ctx aes_ctx;
     memset(&aes_ctx, 0, sizeof(aes_ctx));
     nettle_cipher_func *f;
     switch (key_size) {
     case 256:
-		nettle_aes256_set_encrypt_key(&aes_ctx.u.ctx256, key);
+		nettle_aes256_set_encrypt_key(&aes_ctx.ctx256, key);
 		f = (nettle_cipher_func *)nettle_aes256_encrypt;
 		break;
 	case 192:
-		nettle_aes192_set_encrypt_key(&aes_ctx.u.ctx192, key);
+		nettle_aes192_set_encrypt_key(&aes_ctx.ctx192, key);
 		f = (nettle_cipher_func *)nettle_aes192_encrypt;
 		break;
 	case 128:
-		nettle_aes128_set_encrypt_key(&aes_ctx.u.ctx128, key);
+		nettle_aes128_set_encrypt_key(&aes_ctx.ctx128, key);
 		f = (nettle_cipher_func *)nettle_aes128_encrypt;
 		break;
 	default:
 		return;
 	}
-	nettle_ctr_crypt(&aes_ctx.u, f, AES_BLOCK_SIZE, iv, payload_len, outbuf, inbuf);
+	nettle_ctr_crypt(&aes_ctx, f, AES_BLOCK_SIZE, iv, payload_len, outbuf, inbuf);
 #else
     uint32_t aes_key_sched[60];
     aes_key_setup(key, aes_key_sched, key_size);
@@ -241,7 +241,7 @@ static void _librist_crypto_psk_aes_ctr(struct rist_key *key, const uint8_t inbu
 	default:
 		return;
 	}
-	nettle_ctr_crypt(&key->nettle_ctx.u, f, AES_BLOCK_SIZE, key->iv,payload_len, outbuf, inbuf);
+	nettle_ctr_crypt(&key->nettle_ctx, f, AES_BLOCK_SIZE, key->iv,payload_len, outbuf, inbuf);
 #elif defined(LINUX_CRYPTO)
 	if (key->linux_crypto_ctx)
 		linux_crypto_decrypt(inbuf, outbuf, payload_len, key->iv, key->linux_crypto_ctx);

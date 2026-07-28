@@ -15,6 +15,14 @@
 #include "mbedtls/aes.h"
 #elif HAVE_NETTLE
 #include <nettle/aes.h>
+/* nettle's unified struct aes_ctx was deprecated for years and removed in
+ * 4.0. All we ever wanted from it was somewhere to hold one of the three
+ * per-size key schedules, so hold it ourselves. */
+union rist_nettle_aes_ctx {
+	struct aes128_ctx ctx128;
+	struct aes192_ctx ctx192;
+	struct aes256_ctx ctx256;
+};
 #else
 #ifdef LINUX_CRYPTO
 #include "linux-crypto.h"
@@ -38,7 +46,7 @@ struct rist_key {
 	unsigned char strean_block[16];
 	mbedtls_aes_context mbedtls_aes_ctx;
 #elif HAVE_NETTLE
-	struct aes_ctx nettle_ctx;
+	union rist_nettle_aes_ctx nettle_ctx;
 #elif defined(LINUX_CRYPTO)
 	struct linux_crypto *linux_crypto_ctx;
 #endif
