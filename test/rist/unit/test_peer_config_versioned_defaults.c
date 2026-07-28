@@ -7,6 +7,7 @@
  * Field introduction versions (see include/librist/peer.h history):
  *   split_mode, merge_mode : version 1
  *   profile, profile_set   : version 4
+ *   rtt_drop et al         : version 6
  *
  * Links against the public library only; no cmocka. */
 
@@ -18,7 +19,8 @@
 
 #define SENTINEL 0x5a5a5a5a
 
-static int check(int version, int expect_split_set, int expect_profile_set)
+static int check(int version, int expect_split_set, int expect_profile_set,
+                 int expect_rtt_set)
 {
 	struct rist_peer_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
@@ -26,6 +28,10 @@ static int check(int version, int expect_split_set, int expect_profile_set)
 	cfg.merge_mode = SENTINEL;
 	cfg.profile = (enum rist_profile)SENTINEL;
 	cfg.profile_set = SENTINEL;
+	cfg.rtt_drop = SENTINEL;
+	cfg.rtt_restore = SENTINEL;
+	cfg.rtt_drop_settle = SENTINEL;
+	cfg.rtt_drop_trickle = SENTINEL;
 
 	if (rist_peer_config_defaults_set_versioned(&cfg, version) != 0) {
 		fprintf(stderr, "FAIL: versioned(v=%d) returned error\n", version);
@@ -54,6 +60,14 @@ static int check(int version, int expect_split_set, int expect_profile_set)
 		        version, profile_written, expect_profile_set);
 		failures++;
 	}
+
+	int rtt_written = (cfg.rtt_drop != SENTINEL) || (cfg.rtt_restore != SENTINEL) ||
+	                  (cfg.rtt_drop_settle != SENTINEL) || (cfg.rtt_drop_trickle != SENTINEL);
+	if (rtt_written != expect_rtt_set) {
+		fprintf(stderr, "FAIL: v=%d rtt fields written=%d (want %d)\n",
+		        version, rtt_written, expect_rtt_set);
+		failures++;
+	}
 	return failures;
 }
 
@@ -61,10 +75,12 @@ int main(void)
 {
 	int failures = 0;
 
-	failures += check(0, 0, 0);
-	failures += check(1, 1, 0);
-	failures += check(3, 1, 0);
-	failures += check(4, 1, 1);
+	failures += check(0, 0, 0, 0);
+	failures += check(1, 1, 0, 0);
+	failures += check(3, 1, 0, 0);
+	failures += check(4, 1, 1, 0);
+	failures += check(5, 1, 1, 0);
+	failures += check(6, 1, 1, 1);
 
 	/* The public header maps rist_peer_config_defaults_set() to the
 	 * caller's compiled RIST_PEER_CONFIG_VERSION. */

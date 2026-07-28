@@ -35,6 +35,10 @@
 #include "proto/gre.h"
 #include "proto/adv.h"
 #include "rist-adv-ts.h"
+#include "rist-reanchor.h"
+#include "rist-send-grace.h"
+#include "rist-bandwidth-guard.h"
+#include "rist-rtt-mute.h"
 
 struct cJSON;
 
@@ -89,6 +93,14 @@ static inline uint32_t rist_seq_next(uint32_t last, bool short_seq)
  * never age a packet out of the recovery buffer. */
 #define RIST_CBR_MAX_HOLD_US (1000)
 #define RIST_PING_INTERVAL (100)  /* In milliseconds, how long to space ping requests */
+/* Missed RTCP/ping intervals before a bonded leg is pulled from the rotation
+ * (fast, reversible); kept well under the liveness timeout, the real teardown. */
+#define RIST_STALL_MUTE_PINGS (3)
+/* Floor for the per-peer liveness timeout, in missed RTCP/ping intervals. */
+#define RIST_LIVENESS_MIN_PINGS (4)
+/* How much better a sibling must measure before it takes the sole-carrier role
+ * from the incumbent, as a divisor of the incumbent's smoothed RTT. */
+#define RIST_SOLE_CARRIER_MARGIN (2)
 #define RIST_PBKDF2_HMAC_SHA256_ITERATIONS (1024)
 #define RIST_AES_KEY_REUSE_TIMES UINT32_MAX
 #define RIST_MAX_HOSTNAME (128)
@@ -305,6 +317,9 @@ struct rist_flow {
 	uint64_t last_output_time;
 	uint64_t max_source_time;
 	uint64_t too_late_ctr;
+	/* When we started holding off a re-anchor for want of a current packet.
+	 * Zero while not holding off. */
+	uint64_t reanchor_wait_since;
 
 	size_t offset_recalc_sample_count;
 	uint64_t offset_recalc_samples[2048];
@@ -678,6 +693,32 @@ struct rist_peer {
 	/* RTT statistics */
 	uint64_t last_rtt;
 
+	/* Dynamic RTT-based muting (sender bonding, ?rtt-drop=). When muted the
+	 * leg is skipped in the weighted payload rotation but its connection and
+	 * RTCP probing continue so RTT keeps updating for the restore decision. */
+	bool rtt_muted;
+	struct rist_rtt_mute_state rtt_mute_state;
+	uint32_t rtt_trickle_counter; /* 1-in-N counter for redundant trickle sends */
+	uint32_t rtt_mute_count; /* cumulative count of RTT-triggered mute events */
+	/* Elected to keep carrying while every leg wants mute. Sticky: held until
+	 * the leg recovers or a sibling is clearly better, so the payload path
+	 * does not ping-pong between two equally bad legs. */
+	bool rtt_sole_carrier;
+	uint64_t rtt_sole_since;
+	/* Start of the post-restore weight ramp. A leg that was muted for high RTT
+	 * has an empty queue, so it measures well until it is loaded again;
+	 * rejoining at full share re-floods it. Zero when no ramp is in progress. */
+	uint64_t rtt_ramp_start;
+
+	/* Last time this peer was warned that its payload rate leaves no
+	 * retransmission budget under its bandwidth ceiling; 0 if never. */
+	uint64_t bandwidth_warn_ts;
+
+	/* Briefly-silent bonded leg: skipped in the payload rotation but kept
+	 * authenticated, so it resumes without re-auth if it returns before the
+	 * liveness timeout (rist_sender_stall_check / rist_peer_liveness_timeout). */
+	bool stalled;
+
 	/* Missing queue max size */
 	uint32_t missing_counter_max;
 
@@ -852,6 +893,21 @@ RIST_PRIV void sender_peer_append(struct rist_sender *ctx, struct rist_peer *pee
 
 /* Get common context */
 RIST_PRIV struct rist_common_ctx *get_cctx(struct rist_peer *peer);
+
+/* Fold a fresh RTT measurement into the peer's 8-tap smoothed average. RTT is
+ * measured on whichever peer object receives the response, so mirror it onto
+ * the data leg: that is where the balancer and the stats read it from. */
+static inline void rist_peer_rtt_update(struct rist_peer *peer, uint64_t rtt)
+{
+	peer->last_rtt = rtt;
+	peer->eight_times_rtt -= peer->eight_times_rtt / 8;
+	peer->eight_times_rtt += peer->last_rtt;
+	if (peer->peer_data && peer->peer_data != peer)
+	{
+		peer->peer_data->last_rtt = peer->last_rtt;
+		peer->peer_data->eight_times_rtt = peer->eight_times_rtt;
+	}
+}
 
 /*static inline in header file */
 static inline void peer_append(struct rist_peer *p)

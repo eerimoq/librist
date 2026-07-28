@@ -946,10 +946,25 @@ int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, u
 	return 0;
 }
 
+/* Share this leg should take in the weighted payload rotation. Normally the
+ * configured weight, but a leg that just rejoined after an RTT mute ramps back
+ * linearly over the rejoin dwell: it drained while muted, so it measures well
+ * until it carries again, and handing back the full share at once simply
+ * refills the queue and mutes it a second later. */
+static uint32_t rist_peer_effective_weight(const struct rist_peer *peer, uint64_t now)
+{
+	/* Ramp over the rejoin dwell, which is twice the drop dwell. */
+	return rist_rtt_ramped_weight(peer->config.weight, peer->rtt_ramp_start,
+				      (uint64_t)peer->config.rtt_drop_settle * RIST_CLOCK * 2,
+				      now);
+}
+
 void rist_sender_send_data_balanced(struct rist_sender *ctx, struct rist_buffer *buffer)
 {
 	struct rist_peer *peer;
 	struct rist_peer *selected_peer_by_weight = NULL;
+	struct rist_peer *fallback = NULL;
+	uint64_t fallback_rtt = UINT64_MAX;
 	uint32_t max_remainder = 0;
 	int peercnt;
 	bool looped = false;
@@ -970,18 +985,53 @@ peer_select:
 		if (!peer->listening && !peer->multicast_sender && !eap_is_authenticated(peer->eap_ctx))
 			continue;
 #endif
-		/* A peer is "hard dead" only after the recovery buffer grace period expires.
-		 * This prevents single-path streams from being interrupted by temporary
-		 * ECHO/RTCP response delays while still eventually stopping if the peer
-		 * is truly gone. */
-		bool hard_dead = peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now;
+		bool hard_dead = !rist_peer_may_send(peer->dead, peer->dead_since,
+						     peer->recovery_buffer_ticks, now);
 		if ((!peer->listening && !peer->authenticated) || hard_dead
 			|| (peer->listening && !peer->child_alive_count)) {
 			ctx->weight_counter -= peer->config.weight;
 			if (ctx->weight_counter <= 0) {
 				ctx->weight_counter = ctx->total_weight;
 			}
-			peer->w_count = peer->config.weight;
+			peer->w_count = rist_peer_effective_weight(peer, now);
+			continue;
+		}
+
+		/* RTT-muted leg: skipped in the unique-payload rotation. With
+		 * ?rtt-drop-trickle=N, still send a deduped duplicate every Nth packet
+		 * so RTT keeps sampling for a warm restore without stalling the buffer.
+		 * A stalled (briefly silent) leg is skipped too but never trickled: its
+		 * return path is down, so RTCP/keepalive alone probes for recovery.
+		 * The trickle also stops once the leg is queued deeper than the buffer,
+		 * where it can only deliver unusable packets; RTCP keeps measuring RTT,
+		 * and with nothing queued behind them those measurements get honest. */
+		if (peer->rtt_muted || peer->stalled) {
+			if (peer->rtt_muted && peer->config.rtt_drop_trickle > 0 && !looped && !peer->dead
+				&& rist_rtt_trickle_useful(peer->eight_times_rtt / 8,
+							   (uint64_t)peer->config.recovery_length_max * RIST_CLOCK)) {
+				if (++peer->rtt_trickle_counter >= peer->config.rtt_drop_trickle) {
+					peer->rtt_trickle_counter = 0;
+					uint8_t *payload = buffer->data;
+					rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
+				}
+			}
+			ctx->weight_counter -= peer->config.weight;
+			if (ctx->weight_counter <= 0) {
+				ctx->weight_counter = ctx->total_weight;
+			}
+			peer->w_count = rist_peer_effective_weight(peer, now);
+			/* Remember the best skipped leg for the safety net below: a
+			 * muted (late but deliverable) leg beats a stalled one (return
+			 * path down); lowest RTT breaks ties. */
+			if (!peer->dead) {
+				uint64_t s = peer->eight_times_rtt ? peer->eight_times_rtt / 8 : UINT64_MAX;
+				if (!fallback
+				    || (fallback->stalled && !peer->stalled)
+				    || (fallback->stalled == peer->stalled && s < fallback_rtt)) {
+					fallback = peer;
+					fallback_rtt = s;
+				}
+			}
 			continue;
 		}
 		peercnt++;
@@ -1002,13 +1052,14 @@ peer_select:
 						//do nothing
 					} else
 #endif
-					if (child->authenticated && child->is_data && (!child->dead || (child->dead && (child->dead_since + peer->recovery_buffer_ticks) < now))) {
+					if (child->authenticated && child->is_data && rist_peer_may_send(child->dead, child->dead_since, peer->recovery_buffer_ticks, now)) {
 						uint8_t *payload = buffer->data;
 						rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 					}
 					child = child->sibling_next;
 				}
-			} else if (!peer->dead || (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)) {
+			} else {
+				/* Eligibility already decided by hard_dead above. */
 				uint8_t *payload = buffer->data;
 				rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 			}
@@ -1034,13 +1085,14 @@ peer_select:
 						//do nothing
 					} else
 #endif
-				if (child->authenticated && child->is_data && (!child->dead || (child->dead && (child->dead_since + peer->recovery_buffer_ticks) < now))) {
+				if (child->authenticated && child->is_data && rist_peer_may_send(child->dead, child->dead_since, peer->recovery_buffer_ticks, now)) {
 					uint8_t *payload = buffer->data;
 					rist_send_common_rtcp(child, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 				}
 				child = child->sibling_next;
 			}
-		} else if (!peer->dead || (peer->dead && (peer->dead_since + peer->recovery_buffer_ticks) < now)) {
+		} else {
+			/* Eligibility already decided by hard_dead above. */
 			uint8_t *payload = buffer->data;
 			rist_send_common_rtcp(peer, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 		}
@@ -1052,10 +1104,19 @@ peer_select:
 		peer = ctx->common.PEERS;
 		ctx->weight_counter = ctx->total_weight;
 		for (; peer; peer = peer->next) {
-			peer->w_count = peer->config.weight;
+			peer->w_count = rist_peer_effective_weight(peer, now);
 		}
 		if (!looped && !selected_peer_by_weight && peercnt > 0)
 			goto peer_select;
+	}
+
+	/* Safety net: every eligible leg was rtt-muted or stalled, so nothing
+	 * carried this packet. The mute and stall guards run independently and
+	 * can jointly leave no carrier; never silently drop a live packet when a
+	 * usable leg exists. Egress on the best skipped leg. */
+	if (peercnt == 0 && !selected_peer_by_weight && fallback) {
+		uint8_t *payload = buffer->data;
+		rist_send_common_rtcp(fallback, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, buffer->src_port, buffer->dst_port, wire_seq, buffer->ts_null_bytes);
 	}
 }
 
@@ -1081,6 +1142,35 @@ size_t rist_get_sender_retry_queue_size(struct rist_sender *ctx)
 	size_t retry_queue_size = (ctx->sender_retry_queue_write_index - ctx->sender_retry_queue_read_index)
 							& (ctx->sender_retry_queue_size - 1);
 	return retry_queue_size;
+}
+
+/* Pick the lowest-RTT healthy bonded sibling in the same sequence domain to
+ * egress a retransmit when the NACK's own leg is RTT-muted or stalled (its
+ * latency/silence would make the recovery packet arrive too late). Returns the
+ * original leg if none qualifies. Caller holds peerlist_lock. */
+static struct rist_peer *rist_retx_healthy_egress(struct rist_sender *ctx,
+						  struct rist_peer *muted)
+{
+	uint64_t now = timestampNTP_u64();
+	struct rist_peer *best = NULL;
+	uint64_t best_rtt = UINT64_MAX;
+	for (struct rist_peer *peer = ctx->common.PEERS; peer; peer = peer->next) {
+		if (!peer->is_data || peer->parent || peer->listening)
+			continue;
+		if (peer->rtt_muted || peer->stalled || !peer->authenticated)
+			continue;
+		if (!rist_peer_may_send(peer->dead, peer->dead_since, peer->recovery_buffer_ticks, now))
+			continue;
+		struct rist_peer *egress = peer->peer_data ? peer->peer_data : peer;
+		if (egress->remote_supports_advanced != muted->remote_supports_advanced)
+			continue;
+		uint64_t rtt = egress->eight_times_rtt ? egress->eight_times_rtt : UINT64_MAX;
+		if (rtt < best_rtt) {
+			best_rtt = rtt;
+			best = egress;
+		}
+	}
+	return best ? best : muted;
 }
 
 /* This function must return, 0 when there is nothing to send, < 0 on error and > 0 for bytes sent */
@@ -1114,6 +1204,12 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	struct rist_peer *idx_target = retry->peer->peer_data ? retry->peer->peer_data : retry->peer;
 	bool main_domain_retx = rist_retx_use_rtp_domain(ctx->common.profile,
 							 idx_target->remote_supports_advanced);
+
+	/* Redirect off a muted/stalled leg to a healthy sibling (unchanged when
+	 * none qualifies, so no behaviour change unless a leg was pulled). */
+	struct rist_peer *egress = idx_target;
+	if (idx_target->rtt_muted || idx_target->stalled)
+		egress = rist_retx_healthy_egress(ctx, idx_target);
 
 	// If they request a non-sense seq number, we will catch it when we check the seq number against
 	// the one on that buffer position and it does not match
@@ -1211,13 +1307,13 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 
 	uint16_t src_port = buffer->src_port;
 	if (src_port == 0)
-		src_port = 32768 + retry->peer->peer_data->adv_peer_id;
+		src_port = 32768 + egress->adv_peer_id;
 	uint32_t retry_wire_seq = (ctx->common.profile == RIST_PROFILE_ADVANCED && !main_domain_retx) ? buffer->seq : (uint32_t)buffer->seq_rtp;
-	ret = rist_send_seq_rtcp(retry->peer->peer_data, retry_wire_seq, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (retry->peer->peer_data->config.virt_dst_port & ~1UL), true, ctx->sender_queue[idx]->ts_null_bytes);
+	ret = rist_send_seq_rtcp(egress, retry_wire_seq, buffer->type, &payload[RIST_MAX_PAYLOAD_OFFSET], buffer->size, buffer->source_time, src_port, (egress->config.virt_dst_port & ~1UL), true, ctx->sender_queue[idx]->ts_null_bytes);
 	// update bandwidth value
 	rist_calculate_bitrate(ret, retry_bw);
 
-	if ((ret == (size_t)-1) || (!retry->peer->peer_data->compression && ret < buffer->size)) {
+	if ((ret == (size_t)-1) || (!egress->compression && ret < buffer->size)) {
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 			"Resending of packet failed %zu != %zu for seq %"PRIu32"\n", ret, buffer->size, retry->seq);
 		retry->peer->stats_sender_instant.retrans_skip++;
@@ -1225,13 +1321,8 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 	}
 
 	buffer->transmit_count++;
-	if (retry->peer->peer_data) {
-		retry->peer->peer_data->stats_sender_instant.retrans++;
-		retry->peer->peer_data->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
-	} else {
-		retry->peer->stats_sender_instant.retrans++;
-		retry->peer->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
-	}
+	egress->stats_sender_instant.retrans++;
+	egress->stats_sender_instant.retransmitted_bytes += (uint64_t)ret;
 	return ret;
 }
 

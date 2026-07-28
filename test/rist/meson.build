@@ -99,6 +99,20 @@ test_multipath_leg_rebind = executable('test_multipath_leg_rebind',
                                            stdatomic_dependency
                                        ])
 
+# Dynamic RTT-based bonded-leg muting (?rtt-drop=): a real two-leg bonded
+# sender must mute a leg whose RTT spikes over the ceiling, reroute payload to
+# the healthy leg, restore on recovery, and never black out the stream.
+test_rtt_mute_bonding = executable('test_rtt_mute_bonding',
+                                   'test_rtt_mute_bonding.c',
+                                   extra_sources,
+                                   include_directories: inc,
+                                   link_with: librist,
+                                   dependencies: [
+                                       threads,
+                                       tools_dependencies,
+                                       stdatomic_dependency
+                                   ])
+
 # issue #188 coverage: receiver-caller socket rebind on session
 # silence (plaintext + shared-PSK; SRP uses listener-side path).
 test_caller_socket_rebind = executable('test_caller_socket_rebind',
@@ -162,6 +176,9 @@ test('NAT rebind PSK cname hijack is refused', test_psk_cname_hijack,
 # Two bonded same-cname paths must stay distinct and not rebind.
 test('Multipath same-cname paths stay distinct (psk)', test_multipath_cname,
      suite: ['regression', 'nat', 'multipath'], timeout: 90)
+# RTT-based bonded-leg auto-mute: mute on spike, reroute, restore, guard.
+test('Bonded leg auto-mutes on RTT spike and recovers', test_rtt_mute_bonding,
+     suite: ['regression', 'multipath'], timeout: 120)
 if have_srp
 	# Positive path: an authenticated SRP caller IS migrated onto the
 	# new source tuple after a NAT source-port rebind.
@@ -202,6 +219,20 @@ if have_srp
 	if get_option('built_tools')
 		test('Bonded SRP leg re-authenticates after a same-tuple flap (srp, netns)',
 		     find_program('test_bonded_leg_flap_netns.sh'),
+		     args: [ristsender_exe, ristreceiver_exe],
+		     suite: ['netns', 'nat', 'multipath', 'srp'], timeout: 120)
+		# Companion: a sub-grace stall must NOT re-auth. Same topology, but a
+		# short silence (under the buffer-derived grace) must ride through on
+		# the existing session instead of tearing down and re-handshaking.
+		test('Bonded SRP leg rides through a sub-grace stall without re-auth (srp, netns)',
+		     find_program('test_bonded_leg_stall_grace_netns.sh'),
+		     args: [ristsender_exe, ristreceiver_exe],
+		     suite: ['netns', 'nat', 'multipath', 'srp'], timeout: 120)
+		# A leg muted for high RTT plus its only sibling stalled for silence
+		# must not leave the balancer with zero carriers: the receiver must
+		# keep getting data on the reinstated leg instead of starving.
+		test('Bonded muted+stalled split keeps a carrier (srp, netns)',
+		     find_program('test_bonded_carrier_never_starved_netns.sh'),
 		     args: [ristsender_exe, ristreceiver_exe],
 		     suite: ['netns', 'nat', 'multipath', 'srp'], timeout: 120)
 	endif

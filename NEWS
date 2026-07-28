@@ -33,6 +33,21 @@ Features:
     rebuilt clock over the first second and corrects to arrival timing for
     the rest of the session if it is not advancing at real time (an older,
     non-conformant sender). Set timing-mode=arrival to force arrival.
+  - Bonded senders can auto-mute a failing leg by RTT. When a leg's smoothed
+    RTT stays above ?rtt-drop=<ms> for ?rtt-drop-settle=<ms>, it is pulled out
+    of the weighted payload rotation and its retransmissions are rerouted to a
+    healthy leg, so the healthy leg(s) carry 100% of the stream and no traffic
+    rides the slow path. It rejoins after RTT stays below ?rtt-restore=<ms> for
+    a longer, conservative dwell (asymmetric hysteresis: quick to drop, slow to
+    rejoin, so a still-marginal link cannot flap back in). The connection stays
+    up and keeps probing RTT while muted; a low-rate redundant trickle
+    (?rtt-drop-trickle=<N>, 1-in-N duplicate packets, on by default) keeps the
+    muted leg measured so recovery is warm rather than a cold cut-over (set 0
+    for a hard mute). The
+    last healthy leg is never muted. Per-leg mute state (rtt_muted) and a
+    cumulative mute-event counter (rtt_mute_events) are exposed in the sender
+    stats JSON and the Prometheus exporter. Disabled by default (rtt-drop=0);
+    no wire change.
   - EAP SHA256-SRP6a gains Version 4: the passphrase pushed over an
     authenticated SRP session is now carried under AES-256-GCM (authenticated
     encryption) instead of the v3 AES-CTR (confidentiality-only) form. Keys are
@@ -123,6 +138,113 @@ Bug Fixes:
     fed the recovery_maxbitrate retransmit throttle, which could refuse
     reactive retransmits while the link was not actually saturated. The
     shared path now skips accounting for Advanced media it did not send.
+  - A (re)connecting sender leg now sends its SDES the moment it authenticates,
+    instead of waiting for the next periodic RTCP tick. The weighted balancer
+    starts forwarding data on a leg as soon as EAP/SRP auth completes, but the
+    receiver drops data on a leg until it has seen the SDES that binds the leg
+    to the flow. On every reconnect the first data raced ahead of the SDES, so
+    the receiver discarded roughly a full RTCP interval of packets ("handshake
+    still pending"); this is most visible when a bonded leg flaps repeatedly.
+    Emitting the SDES up front closes that window.
+  - Bonded legs survive a brief stall without a full re-handshake, and the
+    peer liveness timeout is now principled. A leg that went silent was declared
+    dead after a hardcoded 250 ms and had to re-run EAP/SRP from cold on return,
+    so on a flappy link every RTT spike past 250 ms self-inflicted a re-auth and
+    the receiver dropped data on the leg until the handshake rebuilt. Two
+    changes fix this. First, routing and session lifetime are split: the sender
+    pulls a briefly-silent leg from the payload rotation within a few RTCP
+    intervals (rerouting its share and its retransmissions to a healthy sibling),
+    while the authenticated session is kept far longer. Second, the teardown is
+    the larger of the configured session_timeout and twice the receiver buffer,
+    and session_timeout now defaults to the documented RIST_DEFAULT_SESSION_TIMEOUT
+    (2000 ms) with a floor of a few RTCP intervals, instead of the old 250 ms; a
+    leg that returns within that window resumes on the existing session with no
+    re-auth. The last leg with a live return path is never pulled, so a
+    single-path stream is never cut. Because a leg can be pulled either for
+    high RTT or for silence, the two are reconciled so they never pull every
+    leg at once: a leg is muted only while another stays a carrier, and the
+    balancer never drops data while a usable leg remains.
+  - Senders now really do hold a silent peer for one recovery buffer window
+    before dropping it, which is what the fix for #196 was meant to do. A peer
+    is declared dead when its return path goes quiet, which says nothing about
+    the forward path, so cutting a single-path stream on a late RTCP reply
+    strands a receiver that is still fine. Two defects made the grace period
+    inert. The window is the peer's recovery buffer, and that was only ever
+    computed for receive-side peers, leaving it at zero on every sender. The
+    four places that egress payload then tested it backwards, sending to a dead
+    peer only once the window had already run out -- and the gate above them had
+    already dropped the peer by then, so the window was the one interval in
+    which they stayed silent. With a 4 s buffer a single-path sender went quiet
+    3 s after the return path died; it now keeps sending for 13 s (twice the
+    buffer before the peer is declared dead, then the buffer again as grace).
+    Bonded legs are unaffected: a silent leg is pulled from the rotation by the
+    stall check long before it is ever declared dead. Populating the buffer on
+    send-side peers also makes the sender's liveness timeout match the
+    receiver's, instead of always falling back to session_timeout and tearing
+    the session down first.
+  - RTT auto-mute no longer ping-pongs the stream between two failing legs.
+    When every bonded leg was over the ceiling, the leg elected to keep
+    carrying was re-picked from the instantaneous RTT on every tick, so with
+    both legs oscillating the payload path swapped about once a second --
+    worse for the stream than committing to either leg, and the visible
+    remaining glitch on bonded cellular. The role is now sticky: the elected
+    leg holds it until it recovers, goes silent, or a sibling measures several
+    times better after the incumbent has served at least one drop dwell. The
+    mute log also no longer claims the ceiling was crossed when a leg was
+    muted while serving out its rejoin dwell.
+  - A leg rejoining after an RTT mute ramps its share back up instead of
+    resuming at full weight. A muted leg carries almost nothing, so its queue
+    drains and it measures well right until it is loaded again; handing back
+    the full share at once refilled the queue and re-muted it seconds later,
+    which self-oscillated for as long as the link stayed marginal. The share
+    now rises linearly over the rejoin dwell, so the leg reveals congestion
+    under a growing load and settles at whatever it can actually carry.
+  - Senders now report a bandwidth ceiling that leaves no room for
+    retransmissions. ?bandwidth= (recovery_maxbitrate) caps payload and
+    retransmissions together rather than payload alone, so a ceiling at or
+    below the payload rate refuses every NACK for the life of the stream.
+    The refusal was logged at debug level only, so what an operator saw was
+    a link that never recovered a packet, which reads as a network fault
+    rather than a configuration one. A warning now repeats every 30 seconds
+    while the condition holds, giving the payload rate, the ceiling and the
+    number of refusals in the interval.
+  - Receivers no longer rebuild a flow's baseline on a stale packet. When the
+    recovery buffer empties, the next packet in sets the flow's clock offset and
+    sequence baseline, and any packet would do. A bonded leg queued seconds deep
+    keeps delivering packets that old, so on a reset it could win the race and
+    rewind the baseline by its whole lag: the next packet from the healthy leg
+    then looked like a multi-second jump, which emptied the buffer again. Bonded
+    runs showed this repeat until the flow was declared dead, rewinding 12000
+    sequence numbers and 15 seconds of clock in one step. A packet further behind
+    the flow's high-water mark than the buffer is deep cannot be output anyway,
+    so it is no longer taken as a baseline while a current one may still arrive.
+    The wait is capped at one buffer window, so a flow left with nothing but a
+    lagged leg, or a source that restarted on a lower clock, still recovers.
+  - The trickle on an RTT-muted bonded leg now stops once the leg is queued
+    deeper than the receiver's buffer. Past that point nothing sent on it can
+    arrive in time to be output, and the arrivals are the stale baseline
+    candidates described above. RTCP keeps measuring the leg's RTT, and with no
+    payload queued behind them those measurements become honest, so the leg is
+    still retried; legs within the buffer window trickle as before.
+  - Receiver loss statistics no longer report impossible spikes. The output
+    path counted a lost packet for every empty slot it stepped over in the
+    recovery ring, which only matches the real loss while the reader sits
+    right behind the data; after an idle source or a buffer re-anchor the
+    walk spans far more slots than there are missing packets. A clean
+    29-minute bonded run reported 40600 packets lost in a one-second window
+    whose sequence numbers showed no gap at all, and 12% cumulative loss on
+    a stream that never visibly glitched. Loss is now taken from the
+    sequence gap, the same measure the nack path already used, so the
+    reported and recovered counts agree.
+  - Advanced Profile RTT echo replies now feed the smoothed RTT. The reply
+    handler recorded the measurement as the peer's last RTT but never folded it
+    into the 8-tap average, nor mirrored it onto the data leg where the balancer
+    and the stats read it. The value was therefore discarded, and any setup that
+    probes RTT only over the Advanced echo would leave the smoothed RTT stuck at
+    its seed -- blinding RTT auto-mute and the retransmission timers. In
+    practice the Main RTCP receiver reports still refreshed it, so this was
+    latent rather than user-visible. The smoothing rule now lives in one place
+    shared by every RTT source.
   - Advanced Profile senders now emit a spec-conformant RTP timestamp. The
     1 MHz timestamp (TR-06-3 Section 5.2.1) was built with a >> 16 shift that
     ran the clock 65536x too fast and wrapped every ~65 ms; the sender now

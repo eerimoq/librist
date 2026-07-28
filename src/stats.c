@@ -15,7 +15,10 @@
 #include "cjson/cJSON.h"
 
 /* Bump on any incompatible shape change to the stats JSON payloads. */
-#define RIST_STATS_JSON_SCHEMA_VERSION 4
+#define RIST_STATS_JSON_SCHEMA_VERSION 5
+
+/* How often to repeat the no-retransmission-budget warning. */
+#define RIST_BANDWIDTH_WARN_INTERVAL (30000ULL * RIST_CLOCK)
 
 static double round_two_digits(double number)
 {
@@ -117,6 +120,24 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 
 	struct rist_common_ctx *cctx = get_cctx(peer);
 
+	if (peer->is_data
+	    && rist_retransmit_budget_starved(bitrate,
+					      (size_t)peer->config.recovery_maxbitrate * 1000)) {
+		uint64_t now = timestampNTP_u64();
+		if (rist_bandwidth_warn_due(peer->bandwidth_warn_ts,
+					    RIST_BANDWIDTH_WARN_INTERVAL, now)) {
+			peer->bandwidth_warn_ts = now;
+			rist_log_priv(cctx, RIST_LOG_WARN,
+				"Peer #%"PRIu32": no retransmission budget. Payload alone is %zu kbps "
+				"against a %u kbps bandwidth ceiling, and that ceiling covers payload "
+				"plus retransmissions, so every NACK is refused (%"PRIu32" this interval) "
+				"and lost packets are never recovered. Raise ?bandwidth= above the "
+				"payload rate, leaving headroom for recovery.\n",
+				peer->adv_peer_id, bitrate / 1000, peer->config.recovery_maxbitrate,
+				peer->stats_sender_instant.bandwidth_skip);
+		}
+	}
+
 	cJSON *peer_obj = cJSON_CreateObject();
 	cJSON_AddNumberToObject(peer_obj, "flow_id", peer->adv_flow_id);
 	cJSON_AddNumberToObject(peer_obj, "id", peer->adv_peer_id);
@@ -145,6 +166,8 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	cJSON_AddNumberToObject(json_stats, "avg_rtt", (double)avg_rtt / RIST_CLOCK);
 	cJSON_AddNumberToObject(json_stats, "retry_buffer_size", (double)retry_buf_size);
 	cJSON_AddNumberToObject(json_stats, "cooldown_time", (double)time_left);
+	cJSON_AddBoolToObject(json_stats, "rtt_muted", peer->rtt_muted ? 1 : 0);
+	cJSON_AddNumberToObject(json_stats, "rtt_mute_events", (double)peer->rtt_mute_count);
 	cJSON *stats = cJSON_CreateObject();
 	cJSON_AddNumberToObject(stats, "schema_version", RIST_STATS_JSON_SCHEMA_VERSION);
 	cJSON *rist_sender_stats = cJSON_AddObjectToObject(stats, "sender-stats");
@@ -172,6 +195,8 @@ cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
 	stats_container->stats.sender_peer.retransmitted_bytes = peer->stats_sender_instant.retransmitted_bytes;
 	stats_container->stats.sender_peer.profile = (uint8_t)cctx->profile;
 	stats_container->stats.sender_peer.advanced_active = peer->is_advanced ? 1 : 0;
+	stats_container->stats.sender_peer.rtt_muted = peer->rtt_muted ? 1 : 0;
+	stats_container->stats.sender_peer.rtt_mute_events = peer->rtt_mute_count;
 
 	if (cctx->stats_callback != NULL)
 		cctx->stats_callback(cctx->stats_callback_argument, stats_container);

@@ -130,6 +130,8 @@ struct rist_prometheus_sender_peer_stats {
 		double rist_sender_peer_retransmitted_packets;
 		double rist_sender_peer_rtt_seconds;
 		double rist_sender_peer_quality_ratio;
+		double rist_sender_peer_rtt_muted;
+		double rist_sender_peer_rtt_mute_events;
 	} container[16];
 	int container_count;
 	int container_offset;
@@ -330,6 +332,8 @@ static int rist_prometheus_format_sender_peer_stats(struct rist_prometheus_stats
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_received_packets, "Total number of packets received (rtcp)", "packets")
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_rtt_seconds, "Current RTT in seconds", "seconds");
 	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_quality_ratio, "Current connection quality ratio", "ratio");
+	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_rtt_muted, "Whether this bonded leg is currently muted by RTT auto-mute (1) or active (0)", "bool");
+	PROMETHEUS_GAUGE_PRINT_SENDER_PEER(rist_sender_peer_rtt_mute_events, "Cumulative number of RTT-triggered mute events on this leg", "events");
 	return offset;
 }
 
@@ -711,6 +715,8 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 	s->container[s->container_offset].rist_sender_peer_ts_nulls_bandwidth_bps = ts_nulls_bandwidth;
 	s->container[s->container_offset].rist_sender_peer_rtt_seconds= ((double)1 / (double)1000) * stats->rtt;
 	s->container[s->container_offset].rist_sender_peer_quality_ratio = (double)stats->quality / 100.0;
+	s->container[s->container_offset].rist_sender_peer_rtt_muted = stats->rtt_muted ? 1.0 : 0.0;
+	s->container[s->container_offset].rist_sender_peer_rtt_mute_events = (double)stats->rtt_mute_events;
 	s->container[s->container_offset].updated = now;
 	s->last_updated = now;
 	if (!ctx->single_stat_point) {
@@ -793,6 +799,12 @@ void rist_prometheus_parse_sender_stats(struct rist_prometheus_stats *ctx, uint1
 		item = cJSON_GetObjectItem(peerstats, "rtt");
 		if (cJSON_IsNumber(item))
 			stats_container.stats.sender_peer.rtt = (uint32_t)item->valuedouble;
+		item = cJSON_GetObjectItem(peerstats, "rtt_muted");
+		if (cJSON_IsBool(item))
+			stats_container.stats.sender_peer.rtt_muted = cJSON_IsTrue(item) ? 1 : 0;
+		item = cJSON_GetObjectItem(peerstats, "rtt_mute_events");
+		if (cJSON_IsNumber(item))
+			stats_container.stats.sender_peer.rtt_mute_events = (uint32_t)item->valuedouble;
 
 		rist_prometheus_handle_sender_peer_stats(ctx, &stats_container, now, id);
 	}
