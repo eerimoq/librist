@@ -174,8 +174,8 @@ int main(int argc, char *argv[]) {
 	const int listen_port = use_psk ? 22001 : use_srp ? 22002 : 22000;
 	/* SRP needs a full re-handshake after the restart, so give the
 	 * handshake and reconnect windows more slack than plaintext/PSK. */
-	const useconds_t handshake_wait = use_srp ? 5000000 : 2000000;
-	const useconds_t reconnect_wait = use_srp ? 6000000 : 4000000;
+	const unsigned handshake_wait = use_srp ? 5000000 : 2000000;
+	const unsigned reconnect_wait = use_srp ? 6000000 : 4000000;
 	memset(&cb_state, 0, sizeof(cb_state));
 	pthread_mutex_init(&cb_lock, NULL);
 

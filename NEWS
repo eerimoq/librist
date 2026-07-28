@@ -136,7 +136,7 @@ Security audit:
     address buffer.
 
 Bug Fixes:
-  - librist builds under MSVC again. Two independent breaks, both of which
+  - librist builds under MSVC again. Three independent breaks, two of which
     stopped the Visual Studio solution outright, so a Windows packaging build
     produced no library, no tools and no installer. The new constant-bitrate
     pacing counter is an atomic_uint_least64_t, a type the bundled MSVC
@@ -144,8 +144,10 @@ Bug Fixes:
     target including it. Separately the EAP authenticator-restart regression
     test pulled in <pthread.h> directly, which does not exist there; it now
     takes the mutex API from the Windows pthread-shim as the other tests do.
-    Neither affects compilers with a native stdatomic.h, which is every other
-    supported toolchain.
+    A third, narrower break stopped only the socket-rebind test, which typed
+    two sleep durations as useconds_t, a POSIX type MSVC does not provide.
+    None of this affects compilers with a native stdatomic.h and real
+    pthreads, which is every other supported toolchain.
   - librist now builds against nettle 4.0. The AES-CTR, SRP and EAP v4 code
     used three interfaces that 4.0 removed: the unified struct aes_ctx, and
     the length argument on the sha256, hmac-sha256 and gcm digest calls. A
