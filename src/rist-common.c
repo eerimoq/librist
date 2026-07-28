@@ -1232,11 +1232,14 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 									rist_pacer_rate_bps(&f->cbr_rate), b->size, 0);
 					if (iv) {
 						uint64_t now_ns = timestampNTP_to_ns(now);
+						f->cbr_interval_ns = iv;
 						if (rist_pacer_due_ns(&f->cbr_pacer, now_ns) > now_ns) {
 							uint64_t overdue = now > b->target_output_time ?
 									(now - b->target_output_time) : 0;
-							if (overdue < ((uint64_t)RIST_CBR_MAX_HOLD_US * RIST_CLOCK) / 1000)
+							if (overdue < ((uint64_t)f->cbr_max_hold_us * RIST_CLOCK) / 1000) {
+								f->cbr_paced_hold = true; /* waiting its turn, not idle */
 								break;
+							}
 							/* Re-anchor, else every later packet lands here too. */
 							f->cbr_overdue_releases++;
 							rist_pacer_reset(&f->cbr_pacer);
@@ -4424,10 +4427,12 @@ static PTHREAD_START_FUNC(receiver_pthread_dataout, arg)
 
 	/* Keep one source of truth for the wake ceiling. */
 	flow->cbr_pacer.max_sleep_ns = (uint64_t)max_output_jitter_ms * 1000000ULL;
+	flow->cbr_max_hold_us = rist_cbr_hold_us((uint32_t)max_output_jitter_ms);
 	if (flow->cbr_output)
 		rist_log_priv(&receiver_ctx->common, RIST_LOG_INFO,
-			"CBR output pacing enabled, wake interval %u us to %d ms\n",
-			flow->cbr_output_min_us, max_output_jitter_ms);
+			"CBR output pacing enabled, wake interval %u us to %d ms, hold %u us\n",
+			flow->cbr_output_min_us, max_output_jitter_ms,
+			flow->cbr_max_hold_us);
 
 	pthread_mutex_lock(&(flow->mutex));
 	uint64_t target_recovery_buffer_size = flow->recovery_buffer_ticks;
@@ -4453,6 +4458,16 @@ static PTHREAD_START_FUNC(receiver_pthread_dataout, arg)
 			if (delta)
 				rist_pacer_rate_add(&flow->cbr_rate, (size_t)delta,
 						    timestampNTP_to_us(now_ntp));
+			/* Wake at least twice per datagram interval, once one is known. */
+			if (flow->cbr_interval_ns) {
+				uint64_t floor_ns = flow->cbr_interval_ns / 2;
+				uint64_t ceil_ns = (uint64_t)flow->cbr_output_min_us * 1000;
+				if (floor_ns < RIST_CBR_OUTPUT_MIN_US_FLOOR * 1000ULL)
+					floor_ns = RIST_CBR_OUTPUT_MIN_US_FLOOR * 1000ULL;
+				if (floor_ns > ceil_ns)
+					floor_ns = ceil_ns;
+				flow->cbr_pacer.min_sleep_ns = floor_ns;
+			}
 			wait_us = rist_pacer_sleep_ns(&flow->cbr_pacer,
 						      timestampNTP_to_ns(now_ntp)) / 1000;
 			if (!wait_us)
@@ -4463,9 +4478,14 @@ static PTHREAD_START_FUNC(receiver_pthread_dataout, arg)
 			rist_log_priv(&receiver_ctx->common, RIST_LOG_ERROR, "Error %d in receiver data out loop\n", ret);
 		if (atomic_load_explicit(&flow->shutdown,memory_order_acquire) > 0)
 			break;
+		flow->cbr_paced_hold = false;
 		if (atomic_load_explicit(&flow->receiver_queue_size, memory_order_acquire) > 0) {
 			receiver_output(receiver_ctx, flow);
 		}
+		/* Nothing sent and the pacer was not holding: idle, so don't let the
+		 * schedule accrue due times through the gap. */
+		if (flow->cbr_output && !flow->cbr_paced_hold)
+			rist_pacer_reset(&flow->cbr_pacer);
 
 		if (flow->flow_auto_buffer_scaling) {
 			uint64_t now = timestampNTP_u64();
