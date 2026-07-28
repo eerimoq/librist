@@ -23,9 +23,9 @@
  * never recovers a lost packet, which reads as a bad network rather than a bad
  * ceiling, so it is worth saying out loud.
  *
- * payload and ceiling share one unit (bits per second). A ceiling of 0 is how
- * the URL parser spells "unset" (?bandwidth=0 is ignored), so there is nothing
- * to have exceeded. */
+ * payload and ceiling share one unit (bits per second). A ceiling of 0 means
+ * "unset" everywhere it can still be seen -- init_peer_settings() replaces it
+ * with the default before a peer runs -- so there is nothing to have exceeded. */
 static inline bool
 rist_retransmit_budget_starved(size_t payload_bps, size_t ceiling_bps)
 {

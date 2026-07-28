@@ -228,6 +228,14 @@ Bug Fixes:
     rather than a configuration one. A warning now repeats every 30 seconds
     while the condition holds, giving the payload rate, the ceiling and the
     number of refusals in the interval.
+  - A recovery_maxbitrate of 0 set through the C API no longer turns recovery
+    off. The value looks like "no ceiling" and is what an application reaches
+    for when it does not want retransmissions throttled, but the sender read it
+    as a ceiling of zero and refused every retransmission for the life of the
+    stream, saying so at debug level only. A 0 is now read as unset: it is
+    replaced with the 100000 kbps default and warned about, which is how
+    ?bandwidth=0 on a URL already behaved. Applications that passed 0 meaning
+    "unlimited" get the default rather than a stream with no recovery.
   - Receivers no longer rebuild a flow's baseline on a stale packet. When the
     recovery buffer empties, the next packet in sets the flow's clock offset and
     sequence baseline, and any packet would do. A bonded leg queued seconds deep

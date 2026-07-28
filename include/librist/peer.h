@@ -126,6 +126,8 @@ struct rist_peer_config
 
 	/* Recovery options */
 	enum rist_recovery_mode recovery_mode;
+	/* Ceiling on payload plus retransmissions, not on payload alone. 0 means
+	 * unset, not unlimited, and is replaced with the default. */
 	uint32_t recovery_maxbitrate; /* kbps */
 	uint32_t recovery_maxbitrate_return; /* kbps */
 	uint32_t recovery_length_min; /* ms */
