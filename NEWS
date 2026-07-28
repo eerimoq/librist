@@ -131,6 +131,13 @@ Security audit:
     address buffer.
 
 Bug Fixes:
+  - librist now builds against nettle 4.0. The AES-CTR, SRP and EAP v4 code
+    used three interfaces that 4.0 removed: the unified struct aes_ctx, and
+    the length argument on the sha256, hmac-sha256 and gcm digest calls. A
+    build configured for nettle (?use_nettle=true, which is what distributions
+    and VLC's contrib select over the bundled mbedtls) failed to compile
+    outright. nettle 3.x is still supported; the digest calls are selected on
+    NETTLE_VERSION_MAJOR. No behaviour change on any backend.
   - CBR output pacing now spreads an arrival burst instead of passing most of
     it through. Enabling it used to buy almost nothing: on a 71 Mbps feed the
     output measured 92% of datagrams leaving back to back with pacing on,

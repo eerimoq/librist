@@ -19,6 +19,30 @@
 #include <nettle/hmac.h>
 #include <nettle/gcm.h>
 #include <nettle/memops.h>
+#include <nettle/version.h>
+
+/* nettle 4.0 dropped the length argument from the digest calls, and with it
+ * their ability to truncate. Take the whole digest and cut it here so the
+ * call sites read the same against either nettle. */
+#if NETTLE_VERSION_MAJOR >= 4
+static void rist_hmac_sha256_digest(struct hmac_sha256_ctx *ctx, size_t len, uint8_t *out)
+{
+	uint8_t full[SHA256_DIGEST_SIZE];
+	hmac_sha256_digest(ctx, full);
+	memcpy(out, full, len < sizeof(full) ? len : sizeof(full));
+	_librist_crypto_secure_zero(full, sizeof(full));
+}
+
+static void rist_gcm_aes256_digest(struct gcm_aes256_ctx *ctx, size_t len, uint8_t *out)
+{
+	uint8_t full[GCM_DIGEST_SIZE];
+	gcm_aes256_digest(ctx, full);
+	memcpy(out, full, len < sizeof(full) ? len : sizeof(full));
+}
+#else
+#define rist_hmac_sha256_digest hmac_sha256_digest
+#define rist_gcm_aes256_digest gcm_aes256_digest
+#endif
 #endif
 
 int _librist_crypto_hkdf_expand_sha256(const uint8_t *prk, size_t prk_len,
@@ -72,7 +96,7 @@ done:
 		if (t_len) hmac_sha256_update(&ctx, t_len, t);
 		if (info_len) hmac_sha256_update(&ctx, info_len, info);
 		hmac_sha256_update(&ctx, 1, &counter);
-		hmac_sha256_digest(&ctx, hash_len, t); /* resets to post-set-key state */
+		rist_hmac_sha256_digest(&ctx, hash_len, t); /* resets to post-set-key state */
 		t_len = hash_len;
 		size_t n = okm_len - done_len < hash_len ? okm_len - done_len : hash_len;
 		memcpy(okm + done_len, t, n);
@@ -113,7 +137,7 @@ done:
 	if (aad_len)
 		gcm_aes256_update(&ctx, aad_len, aad);
 	gcm_aes256_encrypt(&ctx, pt_len, ct, pt);
-	gcm_aes256_digest(&ctx, tag_len, tag);
+	rist_gcm_aes256_digest(&ctx, tag_len, tag);
 	_librist_crypto_secure_zero(&ctx, sizeof(ctx));
 	return 0;
 #else
@@ -154,7 +178,7 @@ done:
 	if (aad_len)
 		gcm_aes256_update(&ctx, aad_len, aad);
 	gcm_aes256_decrypt(&ctx, ct_len, pt, ct);
-	gcm_aes256_digest(&ctx, tag_len, local_tag);
+	rist_gcm_aes256_digest(&ctx, tag_len, local_tag);
 	/* nettle memeql_sec is constant-time; returns 1 when equal. */
 	if (memeql_sec(local_tag, tag, tag_len) != 1) {
 		if (ct_len)
