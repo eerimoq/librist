@@ -201,6 +201,14 @@ test_url_rtt_drop_parse = executable('test_url_rtt_drop_parse',
                                      link_with : librist)
 test('url_rtt_drop_parse', test_url_rtt_drop_parse, suite:['unit'])
 
+# ?multiplex-mode= / ?rtp-ptype= URL parsing at the compiled-in udp config
+# version, so a bump cannot leave either unreachable.
+test_url_udp_versioned_params = executable('test_url_udp_versioned_params',
+                                           'test_url_udp_versioned_params.c',
+                                           include_directories : inc,
+                                           link_with : librist)
+test('url_udp_versioned_params', test_url_udp_versioned_params, suite:['unit'])
+
 # TUN CIDR parsing (IPv4 + IPv6) used by risttunnel -l.
 test_tun_cidr_parse = executable('test_tun_cidr_parse',
                                  'test_tun_cidr_parse.c',
