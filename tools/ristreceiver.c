@@ -214,7 +214,7 @@ static int cb_recv(void *arg, struct rist_data_block *b)
 		struct rist_udp_config *udp_config = callback_object->udp_config[i];
 		bool found_it = false;
 		int mux_mode = 0;
-		if (udp_config->version == 1)
+		if (udp_config->version >= 1)
 			mux_mode = udp_config->multiplex_mode;
 		// The stream-id on the udp url gets translated into the virtual destination port of the GRE tunnel
 		// and we match on that. The other two muxing modes are not spec compliant and are only
