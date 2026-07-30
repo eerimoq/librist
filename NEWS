@@ -6,6 +6,36 @@ Recommendations TR-06-1 (Simple Profile), TR-06-2 (Main Profile),
 and TR-06-3 (Advanced Profile).
 
 
+Changes for 0.2.20:
+---------------------------------
+
+ABI/API:
+  - ABI version 16:1:12 (soversion 4, binary-compatible with 0.2.15,
+    0.2.16, 0.2.17, 0.2.18, and 0.2.19)
+  - API version 4.13.0 (unchanged)
+
+Bug Fixes:
+  - ?multiplex-mode= and ?rtp-ptype= parse again on udp urls. Both are only
+    read on a config new enough to hold the field, but the guard asked for an
+    exact udp config version instead of a minimum, so raising that version in
+    0.2.19 to carry the constant-bitrate pacing field left them unreachable.
+    ristsender reported the parameter as unknown and refused the whole url:
+
+      Unknown or invalid parameter multiplex-mode
+      Could not parse inputurl udp://...?stream-id=1968&multiplex-mode=1
+
+    The same exact match in ristsender and ristreceiver was separately
+    stopping them apply the mode, and there it said nothing at all. A sender
+    never set the virtual source port for source-port muxing and never built
+    an IPv4-muxed payload; a receiver always demultiplexed on the virtual
+    destination port. Two 0.2.19 peers agree on that fallback and keep
+    working, which is why only the url error was visible, but a 0.2.19 sender
+    against an older receiver does not: the receiver matches a virtual source
+    port the sender no longer sets. Every one of these guards now asks for a
+    minimum version, and a test parses the guarded parameters at whatever
+    version the library was built with, so the next bump cannot repeat it.
+
+
 Changes for 0.2.19:
 ---------------------------------
 
